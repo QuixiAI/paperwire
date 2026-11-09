@@ -2200,7 +2200,7 @@ Questions to resolve during implementation:
 1. Should the initial repository be called `postal-mcp` or `correspondence-mcp`? **Decided:** `postal-mcp`.
 2. Which provider has the lowest-friction initial account-connection workflow? **Decided:** Lob, in its test environment, is the first provider.
 3. Should the first control plane be a local web UI or CLI? **Decided:** CLI first; a local web UI may follow.
-4. How should individual MCP clients be identified in local deployments?
+4. How should individual MCP clients be identified in local deployments? **Decided:** by a name set when the server is started (`serve --client NAME`). Grants are made to that name. It is configuration, not authentication (§5.2).
 5. Which providers offer sufficiently reliable final-cost information for autonomous sending?
 6. Should grant policies use a custom JSON schema, a policy engine library, or a capability-based authorization model? **Decided:** a custom schema evaluated in Rust.
 7. How should grants be migrated when provider capabilities change?

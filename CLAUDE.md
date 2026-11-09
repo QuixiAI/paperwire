@@ -8,7 +8,11 @@ spec; `PLAN.md` tracks milestones and Rust-specific decisions.
 - `cargo clippy --all-targets` and `cargo fmt` before finishing a change
 
 ## Conventions
-- stdout is the MCP channel. Never print to it; log with `tracing` (stderr).
+- In `serve`, stdout is the MCP channel. Never print to it; log with `tracing` (stderr).
+  Only `admin` commands write results to stdout.
+- The MCP side (`src/mcp/`) reads grants and connections but never creates or
+  changes them. Only `src/admin/` does.
+- The client identity is `serve --client`, never a tool argument.
 - All rmcp-specific code stays in `src/mcp/`.
 - Adapters reach the network only through `http::Transport`.
 - An `HttpError::Ambiguous` outcome is never retried automatically (design.md §19.2).

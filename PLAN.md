@@ -76,18 +76,32 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
   messages strip the URL.
 - Multipart upload; response headers (rate limits, request IDs).
 
-### M2: State, connections, delegation (§27 Phase 0)
-- SQLite schema for the MVP tables.
-- `admin connect lob --env test`: the key is typed at a prompt and stored in
-  the OS keychain (`keyring`), never MCP. An env var is accepted only with an
-  explicit `--from-env` flag, for CI.
-- `admin grant` / `revoke` / `audit`.
-- `connect` and `grant` require confirmation on an interactive terminal and
-  refuse when stdin is not a TTY, so an AI client with shell access cannot
-  run them unattended (see Risks).
-- Policy evaluator with default deny (§5.6), the §5.3 constraints, and audit events (§6.5).
-- Tools: `connections_list`, `connections_status`, `permissions_get`, `permissions_check`.
-- **Milestone:** a simulated client can use only the capabilities granted to it.
+### M2: State, connections, delegation (§27 Phase 0) ✅
+- SQLite (`store/`): connections, grants, usage ledger, audit events. The
+  server and the admin CLI share the file and cache nothing, so a revocation
+  applies on the server's next call (§6.3).
+- Control plane (`admin/`): `connect`, `connections`, `disconnect`, `grant`,
+  `grants`, `revoke`, `audit`. `connect` and `grant` require confirmation on
+  an interactive terminal and refuse without one. `revoke` and `disconnect`
+  only narrow authority and need no confirmation.
+- Credentials: typed at a hidden prompt and stored in the OS keychain
+  (`keyring`). `--from-env VAR` records the variable name instead, for
+  machines without a keychain. It still needs the terminal confirmation.
+- Client identity (open question 4): `serve --client NAME` (default
+  `default`). Grants name that client. It is configuration, not
+  authentication (§5.2).
+- Policy evaluator (`delegation/policy.rs`): a pure function. Default deny
+  (§5.6), the §5.3 limits, fail closed when a limit's input is missing.
+  Limits apply only where they make sense (reads are not constrained by
+  cost or destination). Every decision is audited (§6.5).
+- Tools: `connections_list`, `connections_status`, `permissions_get`,
+  `permissions_check`. A client sees only connections it holds a grant on.
+- **Milestone met:** `tests/delegation.rs` drives the real binary: a client
+  can use only what it was granted, and revoking or disconnecting stops it.
+- **Not yet:** only the mock provider can be connected (Lob is M4). Budgets
+  read the usage ledger but nothing writes to it until M3, which also adds
+  atomic reservations (§16.4). Grants cannot be edited, only revoked and
+  re-created.
 
 ### M3: Operations on the mock provider
 - Tools: `documents_prepare`, `correspondence_quote`, `correspondence_send`, `correspondence_status`.
@@ -122,6 +136,7 @@ After the MVP: Phaxio fax (multipart), Stable inbound mailbox, local web control
 8. `ProviderAdapter` async methods return boxed futures, because the registry
    stores `dyn ProviderAdapter`. `Transport` stays generic (`impl Future`);
    adapters are generic over it (`LobAdapter<T: Transport>`).
+9. Local client identity is the `serve --client` name (open question 4).
 
 ## 4. Risks
 - **An AI with shell access shares the machine with the control plane.** A

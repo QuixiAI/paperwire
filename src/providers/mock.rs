@@ -1,5 +1,7 @@
-use super::{AuthMethod, Channel, Environment, ProviderAdapter, ProviderInfo};
-use crate::core::Capability;
+use super::{
+    AuthMethod, BoxFuture, Channel, Environment, ProviderAdapter, ProviderError, ProviderInfo,
+};
+use crate::core::{Capability, Secret};
 
 /// A provider that performs nothing in the real world. It is used by tests
 /// and is the first provider an installation can delegate against
@@ -17,5 +19,13 @@ impl ProviderAdapter for MockProvider {
             auth: AuthMethod::None,
             environments: vec![Environment::Test],
         }
+    }
+
+    fn verify<'a>(
+        &'a self,
+        _: Environment,
+        _: Option<&'a Secret>,
+    ) -> BoxFuture<'a, Result<Vec<Capability>, ProviderError>> {
+        Box::pin(async { Ok(Capability::ALL.to_vec()) })
     }
 }

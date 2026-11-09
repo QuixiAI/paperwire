@@ -101,6 +101,22 @@ impl Capability {
     }
 }
 
+impl Capability {
+    /// Read capabilities have no real-world effect and cost nothing, so a
+    /// grant's sending constraints (§5.3) do not apply to them.
+    pub fn is_read(self) -> bool {
+        self.as_str().contains(".read")
+    }
+
+    /// Sends a physical mail piece.
+    pub fn is_postal_send(self) -> bool {
+        matches!(
+            self,
+            Self::PostalSendLetter | Self::PostalSendPostcard | Self::PostalSendCertified
+        )
+    }
+}
+
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())

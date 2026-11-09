@@ -3,12 +3,15 @@
 
 mod mock;
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 
-use crate::core::Capability;
+use crate::core::{Capability, Secret};
+use crate::http::HttpError;
 
 pub use mock::MockProvider;
 
@@ -49,11 +52,36 @@ pub struct ProviderInfo {
     pub environments: Vec<Environment>,
 }
 
-/// The adapter contract. It grows by milestone (verify_connection,
-/// capabilities per connection, execute with an `AuthorizedOperation`); only
-/// what is implemented today is declared.
+/// Adapters are stored as `dyn ProviderAdapter`, so their async methods
+/// return boxed futures.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProviderError {
+    #[error("this provider needs a credential")]
+    CredentialRequired,
+    #[error("the provider rejected the credential")]
+    Unauthorized,
+    #[error(transparent)]
+    Http(#[from] HttpError),
+    #[error("{0}")]
+    Other(String),
+}
+
+/// The adapter contract. It grows by milestone (execute with an
+/// `AuthorizedOperation` comes with operations); only what is implemented
+/// today is declared.
 pub trait ProviderAdapter: Send + Sync {
     fn info(&self) -> ProviderInfo;
+
+    /// Check the credential against the provider and report what this
+    /// account can actually do (design.md §4.1). Never guesses: a failure to
+    /// reach the provider is an error, not an empty capability list.
+    fn verify<'a>(
+        &'a self,
+        environment: Environment,
+        credential: Option<&'a Secret>,
+    ) -> BoxFuture<'a, Result<Vec<Capability>, ProviderError>>;
 }
 
 /// The providers this installation knows about.
