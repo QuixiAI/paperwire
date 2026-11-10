@@ -38,6 +38,20 @@ pub enum AdminCommand {
     },
     /// Revoke a grant. Takes effect immediately.
     Revoke { grant_id: String },
+    /// List sent items, newest first.
+    Operations {
+        /// Only operations of this client.
+        #[arg(long)]
+        client: Option<String>,
+    },
+    /// Settle an operation whose outcome is uncertain, after checking with
+    /// the provider yourself. Asks for confirmation on the terminal.
+    Resolve {
+        operation_id: String,
+        /// What the provider says happened: "accepted" or "failed".
+        #[arg(value_parser = ["accepted", "failed"])]
+        outcome: String,
+    },
     /// Show recent audit events, newest first.
     Audit {
         #[arg(long, default_value_t = 50)]
@@ -206,6 +220,34 @@ pub async fn run(
             admin.revoke(&grant_id)?;
             writeln!(out, "Revoked: {grant_id}")?;
         }
+        AdminCommand::Operations { client } => {
+            let operations = admin.operations(client.as_deref())?;
+            if operations.is_empty() {
+                writeln!(out, "No operations.")?;
+            }
+            for o in operations {
+                writeln!(
+                    out,
+                    "{}  {}  {}  client={}  connection={}  {}{}",
+                    o.id,
+                    clock::to_rfc3339(o.created_at),
+                    enum_text(&o.status),
+                    o.principal_id,
+                    o.connection_id,
+                    o.action,
+                    o.provider_reference
+                        .map(|r| format!("  reference={r}"))
+                        .unwrap_or_default(),
+                )?;
+            }
+        }
+        AdminCommand::Resolve {
+            operation_id,
+            outcome,
+        } => {
+            admin.resolve(&operation_id, outcome == "accepted")?;
+            writeln!(out, "Resolved: {operation_id} is {outcome}")?;
+        }
         AdminCommand::Audit { limit } => {
             for record in admin.audit(limit)? {
                 let e = record.event;
@@ -217,6 +259,7 @@ pub async fn run(
                     ("action", e.action),
                     ("decision", e.decision),
                     ("reason", e.reason),
+                    ("detail", e.detail.filter(|d| !d.contains('\n'))),
                 ] {
                     if let Some(value) = value {
                         line.push_str(&format!("  {label}={value}"));

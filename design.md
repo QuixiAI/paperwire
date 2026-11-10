@@ -1410,25 +1410,34 @@ Every provider operation passes through the central policy engine.
 trait ProviderAdapter: Send + Sync {
     fn info(&self) -> ProviderInfo;
 
-    fn verify_connection<'a>(
+    /// Check the credential and report what the account can do.
+    fn verify<'a>(
         &'a self,
-        connection: &'a ProviderConnection,
-    ) -> BoxFuture<'a, Result<ConnectionStatus, ProviderError>>;
+        environment: Environment,
+        credential: Option<&'a Secret>,
+    ) -> BoxFuture<'a, Result<Vec<Capability>, ProviderError>>;
 
-    fn capabilities<'a>(
-        &'a self,
-        connection: &'a ProviderConnection,
-    ) -> BoxFuture<'a, Result<ProviderCapabilities, ProviderError>>;
+    fn quote<'a>(&'a self, item: &'a MailItem) -> BoxFuture<'a, Result<Price, ProviderError>>;
 
-    fn execute<'a>(
+    /// The operation id inside `authorized` is the idempotency key.
+    fn submit<'a>(
         &'a self,
         authorized: &'a AuthorizedOperation,
-        operation: ProviderOperation,
-    ) -> BoxFuture<'a, Result<ProviderResult, ProviderError>>;
+        account: Account<'a>,
+        item: &'a MailItem,
+        documents: &'a [Document],
+    ) -> BoxFuture<'a, Result<Submission, SubmitError>>;
+
+    /// Find an earlier submission, to reconcile an uncertain outcome.
+    fn lookup<'a>(
+        &'a self,
+        operation_id: &'a str,
+        account: Account<'a>,
+    ) -> BoxFuture<'a, Result<Lookup, ProviderError>>;
 }
 ```
 
-Adapters are stored as `dyn ProviderAdapter`, so async methods return boxed futures. Only `info` is implemented so far.
+Adapters are stored as `dyn ProviderAdapter`, so async methods return boxed futures. `submit` fails as either `Rejected` (definitely not accepted) or `Uncertain`; the two are never merged (§19.2).
 
 Channel-specific adapters extend this interface with typed operations.
 

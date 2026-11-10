@@ -53,6 +53,8 @@ pub enum Reason {
     DailyLimitExceeded,
     /// The grant requires the user to approve each operation.
     AdditionalApprovalRequired,
+    /// The operation has no price to bound its cost (design.md §13.4).
+    CostUnbounded,
 }
 
 /// The result of evaluating one operation (design.md §16.2).

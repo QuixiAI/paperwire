@@ -13,8 +13,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::connections::{Connection, ConnectionStatus, CredentialRef};
-use crate::core::{Money, Timestamp, clock};
+use crate::core::{Capability, Money, Timestamp, clock};
 use crate::delegation::{Grant, Usage};
+use crate::documents::{Document, DocumentFormat};
+use crate::operations::{Operation, OperationStatus, Price, Quote};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -60,8 +62,6 @@ pub fn default_data_dir() -> Option<PathBuf> {
     };
     Some(base.join("postal-mcp"))
 }
-
-const SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE provider_connections (
@@ -110,6 +110,60 @@ CREATE TABLE audit_events (
 );
 ";
 
+const SCHEMA_V2: &str = "
+CREATE TABLE documents (
+    id                   TEXT PRIMARY KEY,
+    principal_id         TEXT NOT NULL,
+    title                TEXT,
+    format               TEXT NOT NULL,
+    content              BLOB NOT NULL,
+    sha256               TEXT NOT NULL,
+    page_count           INTEGER NOT NULL,
+    page_count_estimated INTEGER NOT NULL,
+    created_at           INTEGER NOT NULL
+);
+CREATE TABLE quotes (
+    id            TEXT PRIMARY KEY,
+    principal_id  TEXT NOT NULL,
+    connection_id TEXT NOT NULL,
+    action        TEXT NOT NULL,
+    item          TEXT NOT NULL,
+    price_kind    TEXT NOT NULL,
+    currency      TEXT,
+    amount_minor  INTEGER,
+    created_at    INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL
+);
+CREATE TABLE operations (
+    id                 TEXT PRIMARY KEY,
+    quote_id           TEXT NOT NULL UNIQUE REFERENCES quotes (id),
+    principal_id       TEXT NOT NULL,
+    connection_id      TEXT NOT NULL,
+    grant_id           TEXT NOT NULL,
+    policy_version     INTEGER NOT NULL,
+    action             TEXT NOT NULL,
+    status             TEXT NOT NULL,
+    provider_reference TEXT,
+    error              TEXT,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+CREATE INDEX operations_principal ON operations (principal_id, created_at);
+CREATE TABLE usage_reservations (
+    operation_id TEXT PRIMARY KEY,
+    grant_id     TEXT NOT NULL REFERENCES delegation_grants (id),
+    currency     TEXT NOT NULL,
+    amount_minor INTEGER NOT NULL,
+    items        INTEGER NOT NULL,
+    state        TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX usage_reservations_grant ON usage_reservations (grant_id, state);
+";
+
+/// Applied in order; `user_version` counts how many have run.
+const MIGRATIONS: [&str; 2] = [SCHEMA_V1, SCHEMA_V2];
+
 /// Calls are short, synchronous and serialized by a mutex. That is enough
 /// for a local server with one client.
 #[derive(Clone)]
@@ -138,14 +192,14 @@ impl Store {
         db.pragma_update(None, "foreign_keys", true)?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        match version {
-            0 => {
-                tx.execute_batch(SCHEMA_V1)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            }
-            SCHEMA_VERSION => {}
-            newer => return Err(StoreError::TooNew(newer)),
+        let pending = usize::try_from(version)
+            .ok()
+            .and_then(|applied| MIGRATIONS.get(applied..))
+            .ok_or(StoreError::TooNew(version))?;
+        for migration in pending {
+            tx.execute_batch(migration)?;
         }
+        tx.pragma_update(None, "user_version", MIGRATIONS.len() as i64)?;
         tx.commit()?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
@@ -157,10 +211,71 @@ impl Store {
         self.db.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Run `f` in one write transaction: it commits if `f` succeeds and
+    /// rolls back if it fails. `BEGIN IMMEDIATE` takes the write lock up
+    /// front, so two processes cannot both read a budget and then both
+    /// spend it (design.md §16.4).
+    pub fn atomically<T, E: From<StoreError>>(
+        &self,
+        f: impl FnOnce(&Tx<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut db = self.db();
+        let transaction = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(StoreError::from)?;
+        let value = f(&Tx { db: &transaction })?;
+        transaction.commit().map_err(StoreError::from)?;
+        Ok(value)
+    }
+}
+
+/// The queries, on a connection that may be inside a transaction. [`Store`]
+/// offers each of them as a single autocommitted call.
+pub struct Tx<'a> {
+    db: &'a rusqlite::Connection,
+}
+
+/// Give `Store` a method that runs the `Tx` method of the same name.
+macro_rules! on_store {
+    ($( fn $name:ident(&self $(, $arg:ident: $ty:ty)* $(,)?) -> $ret:ty; )*) => {
+        impl Store {
+            $(
+                #[doc = concat!("See [`Tx::", stringify!($name), "`].")]
+                pub fn $name(&self $(, $arg: $ty)*) -> Result<$ret, StoreError> {
+                    Tx { db: &self.db() }.$name($($arg),*)
+                }
+            )*
+        }
+    };
+}
+
+on_store! {
+    fn insert_connection(&self, c: &Connection) -> ();
+    fn connection(&self, id: &str) -> Option<Connection>;
+    fn connections(&self) -> Vec<Connection>;
+    fn set_connection_status(&self, id: &str, status: ConnectionStatus) -> bool;
+    fn insert_grant(&self, g: &Grant) -> ();
+    fn grant(&self, id: &str) -> Option<Grant>;
+    fn grants(&self, principal: Option<&str>) -> Vec<Grant>;
+    fn revoke_grant(&self, id: &str, at: Timestamp) -> bool;
+    fn record_usage(&self, grant_id: &str, operation_id: &str, cost: Option<&Money>, items: u32, at: Timestamp) -> ();
+    fn usage(&self, grant_id: &str, currency: Option<&str>, now: Timestamp) -> Usage;
+    fn insert_document(&self, d: &Document) -> ();
+    fn document(&self, id: &str) -> Option<Document>;
+    fn insert_quote(&self, q: &Quote) -> ();
+    fn quote(&self, id: &str) -> Option<Quote>;
+    fn operation(&self, id: &str) -> Option<Operation>;
+    fn operation_for_quote(&self, quote_id: &str) -> Option<Operation>;
+    fn operations(&self, principal: Option<&str>) -> Vec<Operation>;
+    fn audit(&self, e: &AuditEvent, at: Timestamp) -> ();
+    fn audit_events(&self, limit: u32) -> Vec<AuditRecord>;
+}
+
+impl Tx<'_> {
     // --- connections -----------------------------------------------------
 
     pub fn insert_connection(&self, c: &Connection) -> Result<(), StoreError> {
-        self.db().execute(
+        self.db.execute(
             "INSERT INTO provider_connections
              (id, provider, environment, status, capabilities, credential, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -178,7 +293,7 @@ impl Store {
     }
 
     pub fn connection(&self, id: &str) -> Result<Option<Connection>, StoreError> {
-        self.db()
+        self.db
             .query_row(
                 &format!("{CONNECTION_SELECT} WHERE id = ?1"),
                 [id],
@@ -189,7 +304,7 @@ impl Store {
     }
 
     pub fn connections(&self) -> Result<Vec<Connection>, StoreError> {
-        let db = self.db();
+        let db = self.db;
         let mut statement = db.prepare(&format!("{CONNECTION_SELECT} ORDER BY created_at, id"))?;
         let rows = statement.query_map([], connection_row)?;
         rows.map(|row| row?).collect()
@@ -201,7 +316,7 @@ impl Store {
         id: &str,
         status: ConnectionStatus,
     ) -> Result<bool, StoreError> {
-        let changed = self.db().execute(
+        let changed = self.db.execute(
             "UPDATE provider_connections SET status = ?2 WHERE id = ?1",
             params![id, enum_text(&status)],
         )?;
@@ -211,7 +326,7 @@ impl Store {
     // --- grants ----------------------------------------------------------
 
     pub fn insert_grant(&self, g: &Grant) -> Result<(), StoreError> {
-        self.db().execute(
+        self.db.execute(
             "INSERT INTO delegation_grants
              (id, principal_id, connection_ids, actions, constraints, policy_version,
               created_at, expires_at, revoked_at)
@@ -232,7 +347,7 @@ impl Store {
     }
 
     pub fn grant(&self, id: &str) -> Result<Option<Grant>, StoreError> {
-        self.db()
+        self.db
             .query_row(&format!("{GRANT_SELECT} WHERE id = ?1"), [id], grant_row)
             .optional()?
             .transpose()
@@ -241,7 +356,7 @@ impl Store {
     /// Every grant, revoked and expired ones included, optionally for one
     /// principal.
     pub fn grants(&self, principal: Option<&str>) -> Result<Vec<Grant>, StoreError> {
-        let db = self.db();
+        let db = self.db;
         let mut statement = db.prepare(&format!(
             "{GRANT_SELECT} WHERE ?1 IS NULL OR principal_id = ?1 ORDER BY created_at, id"
         ))?;
@@ -252,7 +367,7 @@ impl Store {
     /// Returns whether a grant was revoked by this call (false if it does
     /// not exist or was already revoked).
     pub fn revoke_grant(&self, id: &str, at: Timestamp) -> Result<bool, StoreError> {
-        let changed = self.db().execute(
+        let changed = self.db.execute(
             "UPDATE delegation_grants SET revoked_at = ?2
              WHERE id = ?1 AND revoked_at IS NULL",
             params![id, at.unix_timestamp()],
@@ -270,7 +385,7 @@ impl Store {
         items: u32,
         at: Timestamp,
     ) -> Result<(), StoreError> {
-        self.db().execute(
+        self.db.execute(
             "INSERT INTO usage_ledger
              (grant_id, operation_id, currency, amount_minor, items, occurred_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -286,16 +401,16 @@ impl Store {
         Ok(())
     }
 
-    /// What `grant_id` has used: spend in `currency` since the start of the
-    /// UTC month, and items since the start of the UTC day.
+    /// What `grant_id` has used or reserved: spend in `currency` since the
+    /// start of the UTC month, and items since the start of the UTC day.
+    /// Held reservations count in full, whenever they were made (§16.4).
     pub fn usage(
         &self,
         grant_id: &str,
         currency: Option<&str>,
         now: Timestamp,
     ) -> Result<Usage, StoreError> {
-        let db = self.db();
-        let spent_this_month_minor = db.query_row(
+        let spent: i64 = self.db.query_row(
             "SELECT COALESCE(SUM(amount_minor), 0) FROM usage_ledger
              WHERE grant_id = ?1 AND currency = ?2 AND occurred_at >= ?3",
             params![
@@ -305,22 +420,245 @@ impl Store {
             ],
             |r| r.get(0),
         )?;
-        let items_today = db.query_row(
+        let items: u32 = self.db.query_row(
             "SELECT COALESCE(SUM(items), 0) FROM usage_ledger
              WHERE grant_id = ?1 AND occurred_at >= ?2",
             params![grant_id, clock::start_of_day(now).unix_timestamp()],
             |r| r.get(0),
         )?;
+        let (held, held_items): (i64, u32) = self.db.query_row(
+            "SELECT COALESCE(SUM(CASE WHEN currency = ?2 THEN amount_minor ELSE 0 END), 0),
+                    COALESCE(SUM(items), 0)
+             FROM usage_reservations WHERE grant_id = ?1 AND state = 'held'",
+            params![grant_id, currency],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
         Ok(Usage {
-            spent_this_month_minor,
-            items_today,
+            spent_this_month_minor: spent.saturating_add(held),
+            items_today: items.saturating_add(held_items),
         })
+    }
+
+    /// Hold `cost` against a grant for an operation that is about to be
+    /// submitted (design.md §16.4). Call inside [`Store::atomically`], in
+    /// the same transaction as the evaluation that allowed it.
+    pub fn reserve(
+        &self,
+        operation_id: &str,
+        grant_id: &str,
+        cost: &Money,
+        at: Timestamp,
+    ) -> Result<(), StoreError> {
+        self.db.execute(
+            "INSERT INTO usage_reservations
+             (operation_id, grant_id, currency, amount_minor, items, state, created_at)
+             VALUES (?1, ?2, ?3, ?4, 1, 'held', ?5)",
+            params![
+                operation_id,
+                grant_id,
+                cost.currency,
+                cost.amount_minor,
+                at.unix_timestamp()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The provider accepted the operation: turn its held reservation into
+    /// recorded usage of `actual`. Does nothing unless it is still held.
+    pub fn commit_reservation(
+        &self,
+        operation_id: &str,
+        actual: &Money,
+        at: Timestamp,
+    ) -> Result<(), StoreError> {
+        let grant_id: Option<String> = self
+            .db
+            .query_row(
+                "UPDATE usage_reservations SET state = 'committed'
+                 WHERE operation_id = ?1 AND state = 'held' RETURNING grant_id",
+                [operation_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match grant_id {
+            Some(grant_id) => self.record_usage(&grant_id, operation_id, Some(actual), 1, at),
+            None => Ok(()),
+        }
+    }
+
+    /// The provider definitely did not accept the operation: give the held
+    /// amount back. Never called for an uncertain outcome.
+    pub fn release_reservation(&self, operation_id: &str) -> Result<(), StoreError> {
+        self.db.execute(
+            "UPDATE usage_reservations SET state = 'released'
+             WHERE operation_id = ?1 AND state = 'held'",
+            [operation_id],
+        )?;
+        Ok(())
+    }
+
+    // --- documents -------------------------------------------------------
+
+    pub fn insert_document(&self, d: &Document) -> Result<(), StoreError> {
+        self.db.execute(
+            "INSERT INTO documents
+             (id, principal_id, title, format, content, sha256, page_count,
+              page_count_estimated, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                d.id,
+                d.principal_id,
+                d.title,
+                enum_text(&d.format),
+                d.content,
+                d.sha256,
+                d.page_count,
+                d.page_count_estimated,
+                d.created_at.unix_timestamp(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn document(&self, id: &str) -> Result<Option<Document>, StoreError> {
+        self.db
+            .query_row(
+                "SELECT id, principal_id, title, format, content, sha256, page_count,
+                        page_count_estimated, created_at
+                 FROM documents WHERE id = ?1",
+                [id],
+                document_row,
+            )
+            .optional()?
+            .transpose()
+    }
+
+    // --- quotes and operations -------------------------------------------
+
+    pub fn insert_quote(&self, q: &Quote) -> Result<(), StoreError> {
+        self.db.execute(
+            "INSERT INTO quotes
+             (id, principal_id, connection_id, action, item, price_kind, currency,
+              amount_minor, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                q.id,
+                q.principal_id,
+                q.connection_id,
+                q.action.as_str(),
+                to_json(&q.item),
+                enum_text(&q.price.kind),
+                q.price.amount.as_ref().map(|m| m.currency.as_str()),
+                q.price.amount.as_ref().map(|m| m.amount_minor),
+                q.created_at.unix_timestamp(),
+                q.expires_at.unix_timestamp(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn quote(&self, id: &str) -> Result<Option<Quote>, StoreError> {
+        self.db
+            .query_row(
+                "SELECT id, principal_id, connection_id, action, item, price_kind, currency,
+                        amount_minor, created_at, expires_at
+                 FROM quotes WHERE id = ?1",
+                [id],
+                quote_row,
+            )
+            .optional()?
+            .transpose()
+    }
+
+    pub fn insert_operation(&self, o: &Operation) -> Result<(), StoreError> {
+        self.db.execute(
+            "INSERT INTO operations
+             (id, quote_id, principal_id, connection_id, grant_id, policy_version, action,
+              status, provider_reference, error, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                o.id,
+                o.quote_id,
+                o.principal_id,
+                o.connection_id,
+                o.grant_id,
+                o.policy_version,
+                o.action.as_str(),
+                enum_text(&o.status),
+                o.provider_reference,
+                o.error,
+                o.created_at.unix_timestamp(),
+                o.updated_at.unix_timestamp(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn operation(&self, id: &str) -> Result<Option<Operation>, StoreError> {
+        self.db
+            .query_row(
+                &format!("{OPERATION_SELECT} WHERE id = ?1"),
+                [id],
+                operation_row,
+            )
+            .optional()?
+            .transpose()
+    }
+
+    /// A quote is used by at most one operation.
+    pub fn operation_for_quote(&self, quote_id: &str) -> Result<Option<Operation>, StoreError> {
+        self.db
+            .query_row(
+                &format!("{OPERATION_SELECT} WHERE quote_id = ?1"),
+                [quote_id],
+                operation_row,
+            )
+            .optional()?
+            .transpose()
+    }
+
+    /// Newest first, optionally for one principal.
+    pub fn operations(&self, principal: Option<&str>) -> Result<Vec<Operation>, StoreError> {
+        let mut statement = self.db.prepare(&format!(
+            "{OPERATION_SELECT} WHERE ?1 IS NULL OR principal_id = ?1
+             ORDER BY created_at DESC, id DESC"
+        ))?;
+        let rows = statement.query_map([principal], operation_row)?;
+        rows.map(|row| row?).collect()
+    }
+
+    /// Move an unsettled (`pending` or `uncertain`) operation to `status`.
+    /// Returns false, changing nothing, if it was already settled: an
+    /// outcome is recorded once.
+    pub fn settle_operation(
+        &self,
+        id: &str,
+        status: OperationStatus,
+        provider_reference: Option<&str>,
+        error: Option<&str>,
+        at: Timestamp,
+    ) -> Result<bool, StoreError> {
+        let changed = self.db.execute(
+            "UPDATE operations
+             SET status = ?2, provider_reference = COALESCE(?3, provider_reference),
+                 error = ?4, updated_at = ?5
+             WHERE id = ?1 AND status IN ('pending', 'uncertain')",
+            params![
+                id,
+                enum_text(&status),
+                provider_reference,
+                error,
+                at.unix_timestamp()
+            ],
+        )?;
+        Ok(changed == 1)
     }
 
     // --- audit -----------------------------------------------------------
 
     pub fn audit(&self, e: &AuditEvent, at: Timestamp) -> Result<(), StoreError> {
-        self.db().execute(
+        self.db.execute(
             "INSERT INTO audit_events
              (at, kind, principal_id, connection_id, grant_id, action, decision, reason,
               policy_version, detail)
@@ -343,7 +681,7 @@ impl Store {
 
     /// The most recent events, newest first.
     pub fn audit_events(&self, limit: u32) -> Result<Vec<AuditRecord>, StoreError> {
-        let db = self.db();
+        let db = self.db;
         let mut statement = db.prepare(
             "SELECT id, at, kind, principal_id, connection_id, grant_id, action, decision,
                     reason, policy_version, detail
@@ -359,6 +697,10 @@ const CONNECTION_SELECT: &str = "SELECT id, provider, environment, status, capab
 
 const GRANT_SELECT: &str = "SELECT id, principal_id, connection_ids, actions, constraints, \
      policy_version, created_at, expires_at, revoked_at FROM delegation_grants";
+
+const OPERATION_SELECT: &str = "SELECT id, quote_id, principal_id, connection_id, grant_id, \
+     policy_version, action, status, provider_reference, error, created_at, updated_at \
+     FROM operations";
 
 type Decoded<T> = rusqlite::Result<Result<T, StoreError>>;
 
@@ -402,6 +744,86 @@ fn grant_row(r: &Row<'_>) -> Decoded<Grant> {
             created_at: timestamp(created_at)?,
             expires_at: expires_at.map(timestamp).transpose()?,
             revoked_at: revoked_at.map(timestamp).transpose()?,
+        })
+    })())
+}
+
+fn document_row(r: &Row<'_>) -> Decoded<Document> {
+    let (format, created_at): (String, i64) = (r.get(3)?, r.get(8)?);
+    let document = Document {
+        id: r.get(0)?,
+        principal_id: r.get(1)?,
+        title: r.get(2)?,
+        format: DocumentFormat::Text,
+        content: r.get(4)?,
+        sha256: r.get(5)?,
+        page_count: r.get(6)?,
+        page_count_estimated: r.get(7)?,
+        created_at: Timestamp::UNIX_EPOCH,
+    };
+    Ok((|| {
+        Ok(Document {
+            format: enum_from_text(&format, "document format")?,
+            created_at: timestamp(created_at)?,
+            ..document
+        })
+    })())
+}
+
+fn action(text: &str) -> Result<Capability, StoreError> {
+    text.parse().map_err(|_| StoreError::Corrupt("capability"))
+}
+
+fn quote_row(r: &Row<'_>) -> Decoded<Quote> {
+    let (id, principal_id, connection_id): (String, String, String) =
+        (r.get(0)?, r.get(1)?, r.get(2)?);
+    let (capability, item, price_kind): (String, String, String) =
+        (r.get(3)?, r.get(4)?, r.get(5)?);
+    let (currency, amount_minor): (Option<String>, Option<i64>) = (r.get(6)?, r.get(7)?);
+    let (created_at, expires_at): (i64, i64) = (r.get(8)?, r.get(9)?);
+    Ok((|| {
+        Ok(Quote {
+            id,
+            principal_id,
+            connection_id,
+            action: action(&capability)?,
+            item: from_json(&item, "mail item")?,
+            price: Price {
+                kind: enum_from_text(&price_kind, "price kind")?,
+                amount: currency
+                    .zip(amount_minor)
+                    .map(|(currency, amount)| Money::new(currency, amount)),
+            },
+            created_at: timestamp(created_at)?,
+            expires_at: timestamp(expires_at)?,
+        })
+    })())
+}
+
+fn operation_row(r: &Row<'_>) -> Decoded<Operation> {
+    let (capability, status): (String, String) = (r.get(6)?, r.get(7)?);
+    let (created_at, updated_at): (i64, i64) = (r.get(10)?, r.get(11)?);
+    let operation = Operation {
+        id: r.get(0)?,
+        quote_id: r.get(1)?,
+        principal_id: r.get(2)?,
+        connection_id: r.get(3)?,
+        grant_id: r.get(4)?,
+        policy_version: r.get(5)?,
+        action: Capability::PostalSendLetter,
+        status: OperationStatus::Pending,
+        provider_reference: r.get(8)?,
+        error: r.get(9)?,
+        created_at: Timestamp::UNIX_EPOCH,
+        updated_at: Timestamp::UNIX_EPOCH,
+    };
+    Ok((|| {
+        Ok(Operation {
+            action: action(&capability)?,
+            status: enum_from_text(&status, "operation status")?,
+            created_at: timestamp(created_at)?,
+            updated_at: timestamp(updated_at)?,
+            ..operation
         })
     })())
 }

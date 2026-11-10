@@ -12,8 +12,9 @@ use std::io::{BufRead, IsTerminal, Write};
 use crate::connections::{
     Connection, ConnectionStatus, CredentialRef, SecretError, SecretStore, resolve,
 };
-use crate::core::{Capability, Secret, Timestamp, clock};
+use crate::core::{Capability, Secret, Timestamp, clock, new_id};
 use crate::delegation::{Constraints, Grant};
+use crate::operations::{self, Operation, OperationStatus};
 use crate::providers::{AuthMethod, Environment, ProviderError, Registry};
 use crate::store::{AuditEvent, AuditRecord, Store, StoreError, enum_text};
 
@@ -323,6 +324,49 @@ impl Admin<'_> {
         Ok(())
     }
 
+    /// Settle an operation whose outcome the provider cannot report
+    /// (design.md §19.2 step 5), after checking with the provider yourself.
+    /// Marking it failed returns its held cost to the budget, so this is
+    /// confirmed like a grant.
+    pub fn resolve(&mut self, operation_id: &str, accepted: bool) -> Result<(), AdminError> {
+        let Some(operation) = self.store.operation(operation_id)? else {
+            return Err(AdminError::Invalid(format!(
+                "no operation {operation_id:?}"
+            )));
+        };
+        if !matches!(
+            operation.status,
+            OperationStatus::Uncertain | OperationStatus::Pending
+        ) {
+            return Err(AdminError::Invalid(format!(
+                "operation {operation_id} is already settled ({})",
+                enum_text(&operation.status)
+            )));
+        }
+        self.confirm(&if accepted {
+            format!(
+                "Mark operation {operation_id} as ACCEPTED by the provider.\n\
+                 Its reserved cost will count as spent."
+            )
+        } else {
+            format!(
+                "Mark operation {operation_id} as FAILED (never accepted by the provider).\n\
+                 Its reserved cost returns to the client's budget. If the provider did \
+                 accept it, the client could then overspend."
+            )
+        })?;
+        if !operations::resolve_by_operator(self.store, operation_id, accepted)? {
+            return Err(AdminError::Invalid(format!(
+                "operation {operation_id} was settled in the meantime"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn operations(&self, principal: Option<&str>) -> Result<Vec<Operation>, AdminError> {
+        Ok(self.store.operations(principal)?)
+    }
+
     pub fn connections(&self) -> Result<Vec<Connection>, AdminError> {
         Ok(self.store.connections()?)
     }
@@ -334,11 +378,6 @@ impl Admin<'_> {
     pub fn audit(&self, limit: u32) -> Result<Vec<AuditRecord>, AdminError> {
         Ok(self.store.audit_events(limit)?)
     }
-}
-
-fn new_id(prefix: &str) -> String {
-    let random = uuid::Uuid::new_v4().simple().to_string();
-    format!("{prefix}_{}", &random[..12])
 }
 
 fn join<T: ToString>(items: &[T]) -> String {
@@ -400,7 +439,13 @@ mod tests {
     use super::*;
     use crate::connections::MemoryStore;
     use crate::core::Money;
-    use crate::providers::{BoxFuture, Channel, MockProvider, ProviderAdapter, ProviderInfo};
+    use crate::delegation::AuthorizedOperation;
+    use crate::documents::Document;
+    use crate::operations::{MailItem, Price};
+    use crate::providers::{
+        Account, BoxFuture, Channel, Lookup, MockProvider, ProviderAdapter, ProviderInfo,
+        Submission, SubmitError,
+    };
 
     /// Answers prompts from a script and records what it was shown.
     #[derive(Default)]
@@ -463,6 +508,28 @@ mod tests {
                 }
             })
         }
+
+        fn quote<'a>(&'a self, _: &'a MailItem) -> BoxFuture<'a, Result<Price, ProviderError>> {
+            unimplemented!("not used by admin tests")
+        }
+
+        fn submit<'a>(
+            &'a self,
+            _: &'a AuthorizedOperation,
+            _: Account<'a>,
+            _: &'a MailItem,
+            _: &'a [Document],
+        ) -> BoxFuture<'a, Result<Submission, SubmitError>> {
+            unimplemented!("not used by admin tests")
+        }
+
+        fn lookup<'a>(
+            &'a self,
+            _: &'a str,
+            _: Account<'a>,
+        ) -> BoxFuture<'a, Result<Lookup, ProviderError>> {
+            unimplemented!("not used by admin tests")
+        }
     }
 
     struct Fixture {
@@ -475,7 +542,10 @@ mod tests {
         fn new() -> Self {
             Self {
                 store: Store::open_in_memory().unwrap(),
-                providers: Registry::new(vec![Arc::new(MockProvider), Arc::new(KeyedProvider)]),
+                providers: Registry::new(vec![
+                    Arc::new(MockProvider::default()),
+                    Arc::new(KeyedProvider),
+                ]),
                 secrets: MemoryStore::default(),
             }
         }

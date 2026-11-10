@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -65,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     });
     match command {
         Command::Serve { client } => {
-            let service = PostalServer::new(providers, store, client)
+            let service = PostalServer::new(providers, store, Arc::new(KeyringStore), client)
                 .serve(stdio())
                 .await?;
             service.waiting().await?;

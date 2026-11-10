@@ -5,9 +5,10 @@ mailbox accounts and give AI agents exactly the authority they need to use
 them. See [`design.md`](design.md) for the specification and
 [`PLAN.md`](PLAN.md) for the implementation plan.
 
-Status: **M2.** The MCP server runs over stdio. You can connect the built-in
-mock provider, grant an AI client limited permissions, and the server
-enforces them. Nothing touches a real provider yet, and nothing can be sent.
+Status: **M3.** The MCP server runs over stdio. You can connect the built-in
+mock provider, grant an AI client limited permissions, and the client can
+prepare a text document, get a quote and send a letter within those limits.
+The mock provider mails nothing; no real provider is supported yet.
 
 ## Build and test
 
@@ -41,12 +42,18 @@ postal-mcp admin grant --client default --connection <connection id> \
     --max-cost USD:300 --monthly-budget USD:3000 --expires-in 30d
 postal-mcp admin grants
 postal-mcp admin revoke <grant id>
+postal-mcp admin operations
 postal-mcp admin audit
 ```
 
 Money is in minor units: `USD:300` is $3.00. A connected account grants the
 AI nothing until you add a grant, and a revoked grant stops working on the
 server's next call.
+
+If a send ends with an unknown outcome, the server never sends it again. It
+asks the provider what happened; if the provider cannot say, check with the
+provider yourself and run `postal-mcp admin resolve <operation id>
+accepted|failed`.
 
 State is kept in `~/.local/share/postal-mcp` (override with `--data-dir` or
 `POSTAL_MCP_DATA_DIR`). API keys are stored in the OS keychain, not there.

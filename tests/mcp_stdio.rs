@@ -6,13 +6,25 @@ use serde_json::json;
 
 use common::{Server, meta, tool_names};
 
-const ALL_TOOLS: [&str; 6] = [
+const ALL_TOOLS: [&str; 10] = [
     "connections_list",
     "connections_status",
+    "correspondence_quote",
+    "correspondence_send",
+    "correspondence_status",
+    "documents_prepare",
     "permissions_check",
     "permissions_get",
     "providers_capabilities",
     "providers_list",
+];
+
+/// Tools that change something. Every other tool must declare itself
+/// read-only.
+const WRITING_TOOLS: [&str; 3] = [
+    "correspondence_quote",
+    "correspondence_send",
+    "documents_prepare",
 ];
 
 #[test]
@@ -23,12 +35,21 @@ fn stateless_2026_07_28_lists_and_calls_tools() {
     let list = server.request(1, "tools/list", json!({"_meta": meta()}));
     assert_eq!(tool_names(&list), ALL_TOOLS);
     for tool in list["result"]["tools"].as_array().unwrap() {
+        let name = tool["name"].as_str().unwrap();
         assert_eq!(
-            tool["annotations"]["readOnlyHint"], true,
-            "{}",
-            tool["name"]
+            tool["annotations"]["readOnlyHint"],
+            !WRITING_TOOLS.contains(&name),
+            "{name}"
         );
     }
+    let send = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "correspondence_send")
+        .unwrap();
+    assert_eq!(send["annotations"]["destructiveHint"], true);
+    assert_eq!(send["annotations"]["idempotentHint"], true);
 
     let providers = server.request(
         2,

@@ -103,11 +103,35 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
   atomic reservations (§16.4). Grants cannot be edited, only revoked and
   re-created.
 
-### M3: Operations on the mock provider
-- Tools: `documents_prepare`, `correspondence_quote`, `correspondence_send`, `correspondence_status`.
-- Persist the operation before calling the provider. Idempotency keys.
-- Atomic budget reservations held until reconciliation. Re-check right before execution (§16.3).
-- Tests from §28.1–28.2, including concurrent sends.
+### M3: Operations on the mock provider ✅
+- Tools: `documents_prepare`, `correspondence_quote`, `correspondence_send`,
+  `correspondence_status`.
+- `operations::send` runs in three steps. (1) In one `BEGIN IMMEDIATE`
+  transaction: evaluate authority, reserve the cost, record the operation
+  as `pending`. (2) Submit, with the operation id as idempotency key.
+  (3) Record the outcome: accepted commits the reservation, a definite
+  rejection releases it, uncertain keeps it held (§16.4, §19.2).
+- `AuthorizedOperation` has private fields and one constructor,
+  `delegation::authorize`. Adapters require one to submit (§17.5).
+- A quote is sent at most once. Sending it again returns the same operation
+  and never contacts the provider, so the quote id is the client's
+  idempotency key (§19.1).
+- Authority is decided at send time, not quote time (§16.3). A send needs a
+  bounded cost even under a grant with no money limits (§13.4).
+- Uncertain operations, and `pending` ones left by a crash, are reconciled
+  through the adapter's `lookup` when status is read. They are never
+  resubmitted. If the provider cannot say, the user settles them with
+  `admin resolve <operation> accepted|failed` (§19.2 step 5).
+- Documents: inline text or Markdown only, with a page count estimated from
+  a layout rule and flagged as estimated. Real formats are M5.
+- Tests (`tests/operations.rs`): every provider outcome, replay, budget
+  reservation and release, ten concurrent sends over two database handles
+  against a budget for three, revocation between quote and send, and
+  isolation between clients (§28.1, §28.2).
+- **Not yet:** only "letter" is supported. Status stops at `accepted`;
+  mailed and delivered come from provider tracking in M4. No approval
+  workflow, so `approval_required` is a refusal. The mock keeps its orders
+  in memory, so they do not survive a server restart.
 
 ### M4: Lob adapter (test keys first)
 - Letters. Verify via an authenticated GET. Create with `Idempotency-Key`. Status from tracking events.
@@ -121,6 +145,8 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
 
 ### M6: MVP demo (§29) as an integration test
 - Connect → grant "domestic letters < $3" → send → status → revoke → send denied.
+- Already passing on the mock provider (`send_a_letter_then_revoke` in
+  `tests/delegation.rs`). What remains is the same test against Lob.
 
 After the MVP: Phaxio fax (multipart), Stable inbound mailbox, local web control plane
 (axum), streamable HTTP + OAuth for hosted mode (§7.2).

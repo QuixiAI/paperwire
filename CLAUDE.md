@@ -13,6 +13,11 @@ spec; `PLAN.md` tracks milestones and Rust-specific decisions.
 - The MCP side (`src/mcp/`) reads grants and connections but never creates or
   changes them. Only `src/admin/` does.
 - The client identity is `serve --client`, never a tool argument.
+- Adapters submit only with a `delegation::AuthorizedOperation`. Never add another
+  way to construct one.
+- Evaluate and reserve inside one `Store::atomically` transaction. An uncertain
+  outcome keeps its reservation held and is never resubmitted.
+- Every lookup by id (document, quote, operation) also checks the owning client.
 - All rmcp-specific code stays in `src/mcp/`.
 - Adapters reach the network only through `http::Transport`.
 - An `HttpError::Ambiguous` outcome is never retried automatically (design.md §19.2).

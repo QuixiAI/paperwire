@@ -300,3 +300,116 @@ async fn admin_cli_will_not_connect_or_grant_without_a_terminal() {
     let stored = control.store.grant(&granted.id).unwrap().unwrap();
     assert!(stored.revoked_at.is_some());
 }
+
+/// The MVP demonstration of design.md §29, on the mock provider: grant
+/// "domestic letters under $3", send one, read its status, revoke, and see
+/// the next send denied.
+#[tokio::test]
+async fn send_a_letter_then_revoke() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = ControlPlane::open(dir.path());
+    let connection = control.connect_mock().await;
+    let grant = control.grant_letters("assistant", &connection);
+    let mut assistant = Server::start(dir.path(), "assistant");
+
+    let document = assistant.call_ok(
+        "documents_prepare",
+        json!({"content": "Dear Jane,\n\nPlease find my reply enclosed.\n", "title": "Reply"}),
+    );
+    assert_eq!(document["page_count"], 1);
+    assert_eq!(document["page_count_estimated"], true);
+
+    let quote_request = json!({
+        "connection_id": connection.id,
+        "product": "letter",
+        "to": {
+            "name": "Jane Doe",
+            "line1": "1 Main St",
+            "city": "Springfield",
+            "state": "IL",
+            "postal_code": "62701",
+            "country": "us"
+        },
+        "document_ids": [document["document_id"]]
+    });
+    let quote = assistant.call_ok("correspondence_quote", quote_request.clone());
+    assert_eq!(quote["price_kind"], "firm");
+    assert_eq!(
+        quote["price"],
+        json!({"currency": "USD", "amount_minor": 100})
+    );
+    assert_eq!(quote["authorization"]["allowed"], true, "{quote}");
+
+    let sent = assistant.call_ok(
+        "correspondence_send",
+        json!({"quote_id": quote["quote_id"]}),
+    );
+    assert_eq!(sent["accepted"], true, "{sent}");
+    let operation = &sent["operation"];
+    assert_eq!(operation["status"], "accepted");
+    assert!(operation["provider_reference"].is_string());
+
+    // Sending the same quote again mails nothing new.
+    let again = assistant.call_ok(
+        "correspondence_send",
+        json!({"quote_id": quote["quote_id"]}),
+    );
+    assert_eq!(
+        again["operation"]["operation_id"],
+        operation["operation_id"]
+    );
+
+    let status = assistant.call_ok(
+        "correspondence_status",
+        json!({"operation_id": operation["operation_id"]}),
+    );
+    assert_eq!(status["status"], "accepted");
+    assert!(status["note"].as_str().unwrap().contains("not proof"));
+    let usage = control
+        .store
+        .usage(&grant.id, Some("USD"), clock::now())
+        .unwrap();
+    assert_eq!(usage.spent_this_month_minor, 100);
+
+    // Another client cannot read the operation.
+    let mut other = Server::start(dir.path(), "other");
+    let hidden = other.call(
+        "correspondence_status",
+        json!({"operation_id": operation["operation_id"]}),
+    );
+    assert_eq!(hidden["isError"], true);
+
+    // A quote taken while permitted is still refused after revocation.
+    let second = assistant.call_ok("correspondence_quote", quote_request.clone());
+    control.admin(&mut Confirms).revoke(&grant.id).unwrap();
+    let denied = assistant.call_ok(
+        "correspondence_send",
+        json!({"quote_id": second["quote_id"]}),
+    );
+    assert_eq!(denied["accepted"], false);
+    assert_eq!(denied["operation"], Value::Null);
+    assert_eq!(denied["authorization"]["reason"], "ACTION_NOT_DELEGATED");
+    // With no grant left, the connection is no longer visible at all.
+    let refused = assistant.call("correspondence_quote", quote_request);
+    assert_eq!(refused["isError"], true);
+
+    assert_eq!(control.store.operations(None).unwrap().len(), 1);
+    let kinds: Vec<String> = control
+        .store
+        .audit_events(100)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.event.kind)
+        .collect();
+    for kind in [
+        "grant.created",
+        "authorization.enforced",
+        "operation.accepted",
+        "grant.revoked",
+    ] {
+        assert!(
+            kinds.contains(&kind.to_owned()),
+            "{kind} missing from {kinds:?}"
+        );
+    }
+}
