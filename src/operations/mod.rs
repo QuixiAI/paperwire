@@ -19,7 +19,9 @@ use crate::connections::{Connection, SecretStore, resolve};
 use crate::core::{Capability, Money, Timestamp, clock, new_id};
 use crate::delegation::{self, Evaluation, OperationContext};
 use crate::documents::{self, Document};
-use crate::providers::{Account, Lookup, ProviderAdapter, Registry, Submission, SubmitError};
+use crate::providers::{
+    Account, Lookup, ProviderAdapter, ProviderError, Registry, Submission, SubmitError, Tracking,
+};
 use crate::store::{AuditEvent, Store, StoreError, Tx, enum_text};
 
 /// How long a quote can be sent against.
@@ -123,6 +125,29 @@ pub struct Price {
     pub kind: PriceKind,
     /// Absent exactly when the kind is `unavailable`.
     pub amount: Option<Money>,
+}
+
+/// The user's own price for a provider product, for providers that cannot
+/// quote (design.md §13.4). It is what bounds the cost of a send, so only
+/// the control plane sets it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderPrice {
+    pub provider: String,
+    pub product: String,
+    /// The price of an item with one billable page.
+    pub base: Money,
+    /// Added for each further billable page, in the same currency.
+    pub per_extra_page_minor: i64,
+}
+
+impl ProviderPrice {
+    /// The price of an item with `pages` billable pages, or `None` on
+    /// overflow.
+    pub fn for_pages(&self, pages: u32) -> Option<Money> {
+        let extra = i64::from(pages.saturating_sub(1)).checked_mul(self.per_extra_page_minor)?;
+        let amount = self.base.amount_minor.checked_add(extra)?;
+        Some(Money::new(self.base.currency.clone(), amount))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,10 +306,22 @@ impl Operations {
             documents: item_documents,
         };
 
-        let price = adapter
-            .quote(&item)
-            .await
-            .map_err(|e| OperationError::Provider(e.to_string()))?;
+        let mut price = adapter.quote(&item).await.map_err(|e| match e {
+            ProviderError::InvalidItem(reason) => OperationError::Invalid(reason),
+            other => OperationError::Provider(other.to_string()),
+        })?;
+        // A provider that cannot quote is priced from the user's own table,
+        // as an estimate. With no entry the price stays unavailable, and
+        // the item cannot be sent: prices are never invented (§13.4).
+        if price.kind == PriceKind::Unavailable
+            && let Some(table) = self.store.price(&connection.provider, &item.product)?
+            && let Some(amount) = table.for_pages(adapter.billable_pages(&item))
+        {
+            price = Price {
+                kind: PriceKind::Estimated,
+                amount: Some(amount),
+            };
+        }
         let quote = Quote {
             id: new_id("quote"),
             principal_id: principal.to_owned(),
@@ -432,6 +469,51 @@ impl Operations {
             self.reconcile(&operation).await?;
         }
         self.reload(operation_id)
+    }
+
+    /// The provider's delivery report for an accepted operation, if this
+    /// client may read status on the connection (`postal.read.status`).
+    /// `None` when it is not accepted, not permitted, or the provider
+    /// cannot be reached: tracking is extra information, never an error.
+    pub async fn track(
+        &self,
+        principal: &str,
+        operation: &Operation,
+    ) -> Result<Option<Tracking>, OperationError> {
+        let (OperationStatus::Accepted, Some(reference)) =
+            (operation.status, operation.provider_reference.as_deref())
+        else {
+            return Ok(None);
+        };
+        let permitted = delegation::check(
+            &self.store,
+            principal,
+            &operation.connection_id,
+            Capability::PostalReadStatus,
+            &OperationContext::default(),
+            clock::now(),
+        )?;
+        if !permitted.is_allowed() {
+            return Ok(None);
+        }
+        let Some(connection) = self.store.connection(&operation.connection_id)? else {
+            return Ok(None);
+        };
+        let Some(adapter) = self.providers.get(&connection.provider) else {
+            return Ok(None);
+        };
+        let Ok(credential) = resolve(
+            &connection.credential,
+            &connection.id,
+            self.secrets.as_ref(),
+        ) else {
+            return Ok(None);
+        };
+        let account = Account {
+            environment: connection.environment,
+            credential: credential.as_ref(),
+        };
+        Ok(adapter.track(reference, account).await.ok())
     }
 
     /// Ask the provider what became of an unsettled operation (§19.2). The

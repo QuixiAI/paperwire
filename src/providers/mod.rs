@@ -1,6 +1,7 @@
 //! Provider adapters (design.md §17). Adapters translate operations into
 //! vendor APIs; they never grant permissions.
 
+mod lob;
 mod mock;
 
 use std::future::Future;
@@ -13,9 +14,10 @@ use serde::{Deserialize, Serialize};
 use crate::core::{Capability, Money, Secret};
 use crate::delegation::AuthorizedOperation;
 use crate::documents::Document;
-use crate::http::HttpError;
+use crate::http::{HttpError, ReqwestTransport, RetryPolicy, Retrying};
 use crate::operations::{MailItem, Price};
 
+pub use lob::LobAdapter;
 pub use mock::{MockBehavior, MockProvider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -65,6 +67,9 @@ pub enum ProviderError {
     CredentialRequired,
     #[error("the provider rejected the credential")]
     Unauthorized,
+    /// The item cannot be sent through this provider as described.
+    #[error("{0}")]
+    InvalidItem(String),
     #[error(transparent)]
     Http(#[from] HttpError),
     #[error("{0}")]
@@ -110,6 +115,30 @@ pub enum Lookup {
     Unknown,
 }
 
+/// How far a piece of mail has got (design.md §19.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryStage {
+    /// Accepted and being produced; not yet handed to the carrier.
+    Processing,
+    Mailed,
+    InTransit,
+    Delivered,
+    Returned,
+    Cancelled,
+    /// The provider reported something this server does not recognize.
+    Unknown,
+}
+
+/// The provider's current report on an accepted order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Tracking {
+    pub stage: DeliveryStage,
+    /// The provider's own wording for the latest event.
+    pub detail: Option<String>,
+    pub expected_delivery_date: Option<String>,
+}
+
 /// The adapter contract (design.md §17.4).
 pub trait ProviderAdapter: Send + Sync {
     fn info(&self) -> ProviderInfo;
@@ -126,6 +155,12 @@ pub trait ProviderAdapter: Send + Sync {
     /// The price of `item`. Never invented: a provider that cannot price
     /// returns [`crate::operations::PriceKind::Unavailable`] (§13.4).
     fn quote<'a>(&'a self, item: &'a MailItem) -> BoxFuture<'a, Result<Price, ProviderError>>;
+
+    /// Pages the provider prints and bills for `item`, when that differs
+    /// from the document's own page count.
+    fn billable_pages(&self, item: &MailItem) -> u32 {
+        item.page_count
+    }
 
     /// Submit `item`. Requires an [`AuthorizedOperation`], which only the
     /// policy engine can create. Its operation id is the idempotency key:
@@ -145,6 +180,13 @@ pub trait ProviderAdapter: Send + Sync {
         operation_id: &'a str,
         account: Account<'a>,
     ) -> BoxFuture<'a, Result<Lookup, ProviderError>>;
+
+    /// The provider's current report on an accepted order.
+    fn track<'a>(
+        &'a self,
+        reference: &'a str,
+        account: Account<'a>,
+    ) -> BoxFuture<'a, Result<Tracking, ProviderError>>;
 }
 
 /// The providers this installation knows about.
@@ -159,8 +201,12 @@ impl Registry {
     }
 
     /// The registry a default installation starts with.
-    pub fn builtin() -> Self {
-        Self::new(vec![Arc::new(MockProvider::default())])
+    pub fn builtin() -> Result<Self, HttpError> {
+        let transport = Retrying::new(ReqwestTransport::new()?, RetryPolicy::default());
+        Ok(Self::new(vec![
+            Arc::new(MockProvider::default()),
+            Arc::new(LobAdapter::new(transport)),
+        ]))
     }
 
     pub fn list(&self) -> Vec<ProviderInfo> {

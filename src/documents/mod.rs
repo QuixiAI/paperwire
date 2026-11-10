@@ -51,9 +51,10 @@ pub enum DocumentError {
 pub const MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_PAGES: u32 = 100;
 
-/// The layout rule behind estimated page counts: a US Letter page of
-/// 12-point monospaced text with one-inch margins.
-const COLUMNS: usize = 78;
+/// The layout rule behind estimated page counts: a US Letter page with
+/// one-inch margins, in 12-point monospaced text. That is 10 characters and
+/// 6 lines to the inch: 65 columns by 54 lines.
+const COLUMNS: usize = 65;
 const LINES_PER_PAGE: usize = 54;
 
 /// Pages needed for `text` under the layout rule. Long lines wrap.
@@ -121,7 +122,7 @@ mod tests {
         assert_eq!(estimate_pages(&"line\n".repeat(54)), 1);
         assert_eq!(estimate_pages(&"line\n".repeat(55)), 2);
         // One very long line wraps onto 55 lines.
-        assert_eq!(estimate_pages(&"x".repeat(78 * 54 + 1)), 2);
+        assert_eq!(estimate_pages(&"x".repeat(65 * 54 + 1)), 2);
     }
 
     #[test]

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use super::DeliveryStage;
 use super::{
     Account, AuthMethod, BoxFuture, Channel, Environment, Lookup, ProviderAdapter, ProviderError,
-    ProviderInfo, Submission, SubmitError,
+    ProviderInfo, Submission, SubmitError, Tracking,
 };
 use crate::core::{Capability, Money, Secret};
 use crate::delegation::AuthorizedOperation;
@@ -147,6 +148,26 @@ impl ProviderAdapter for MockProvider {
                     Some(submission) => Lookup::Found(submission.clone()),
                     None => Lookup::NotFound,
                 }
+            })
+        })
+    }
+
+    fn track<'a>(
+        &'a self,
+        reference: &'a str,
+        _: Account<'a>,
+    ) -> BoxFuture<'a, Result<Tracking, ProviderError>> {
+        Box::pin(async move {
+            let state = self.state.lock().unwrap();
+            let known = state.accepted.values().any(|s| s.reference == reference);
+            Ok(Tracking {
+                stage: if known {
+                    DeliveryStage::Processing
+                } else {
+                    DeliveryStage::Unknown
+                },
+                detail: Some("the mock provider mails nothing".into()),
+                expected_delivery_date: None,
             })
         })
     }

@@ -133,11 +133,38 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
   workflow, so `approval_required` is a refusal. The mock keeps its orders
   in memory, so they do not survive a server restart.
 
-### M4: Lob adapter (test keys first)
-- Letters. Verify via an authenticated GET. Create with `Idempotency-Key`. Status from tracking events.
-- Lob has no quote endpoint, so use a user-configured price table marked `estimated`
-  with a hard max. Unattended sends are allowed only under that bound (§13.4).
-- Contract tests against mock + Lob (wiremock fixtures).
+### M4: Lob adapter ✅ (built from Lob's documentation; not yet run against Lob)
+- `providers/lob.rs`, generic over `Transport`. Registered in
+  `Registry::builtin()` behind the retry wrapper.
+- Verify: `GET /v1/letters?limit=1`. The key's `test_` / `live_` prefix must
+  match the connection's environment, checked before any request.
+- Create: `POST /v1/letters` as JSON, with `Idempotency-Key` set to the
+  operation id and the operation id in `metadata`. 4xx is a definite
+  rejection; 409, 5xx, timeouts and unreadable replies are uncertain.
+- Reconcile: list letters by `metadata[operation_id]`. A hit settles the
+  operation as accepted. An empty list is reported as unknown, not as "never
+  sent", so the user resolves it with `admin resolve`.
+- Price: Lob cannot quote, so the adapter reports the price as unavailable.
+  `admin price lob letter --base USD:… --per-extra-page …` sets the user's
+  own price, which becomes an `estimated` quote. With no price set, nothing
+  can be sent (§13.4). Lob reports no charge, so the full estimate is
+  counted as spent.
+- Content: plain-text documents rendered as escaped HTML in a layout that
+  matches the page estimate, with the address on an inserted first page
+  (billed as a page). Lob's inline limit is 10,000 characters of HTML.
+- Tracking: `correspondence_status` adds the provider's delivery report
+  (`processing`, `mailed`, `in_transit`, `delivered`, `returned`,
+  `cancelled`) when the client holds `postal.read.status`.
+- Contract tests: `tests/lob.rs` against a wiremock stand-in.
+- **To confirm with a real Lob test key:**
+  - the `Lob-Version` value (`2020-02-11`) and the JSON request shape,
+    including `use_type` and `address_placement`;
+  - that Lob's renderer lays the HTML out as the page estimate assumes;
+  - whether listing by metadata shows a new letter immediately, which would
+    let an empty list count as "never sent";
+  - the tracking event names.
+- **Fixed choices worth revisiting:** black and white, double-sided,
+  first-class mail, `use_type: operational`.
 
 ### M5: Documents
 - PDF passthrough (hash, size, page count).

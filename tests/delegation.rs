@@ -42,7 +42,7 @@ impl ControlPlane {
     fn open(data_dir: &Path) -> Self {
         Self {
             store: Store::open(data_dir).unwrap(),
-            providers: Registry::builtin(),
+            providers: Registry::builtin().unwrap(),
             secrets: MemoryStore::default(),
         }
     }

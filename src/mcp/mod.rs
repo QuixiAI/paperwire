@@ -17,7 +17,7 @@ use crate::operations::{
     Address, Operation, OperationError, OperationStatus, Operations, PriceKind, QuoteRequest,
     SendOutcome,
 };
-use crate::providers::{Environment, ProviderInfo, Registry};
+use crate::providers::{Environment, ProviderInfo, Registry, Tracking};
 use crate::store::{Store, StoreError};
 
 #[derive(Clone)]
@@ -206,6 +206,9 @@ pub struct OperationView {
     /// The provider's own id for the order, once accepted.
     pub provider_reference: Option<String>,
     pub error: Option<String>,
+    /// The provider's delivery report. Present only for an accepted item,
+    /// and only if this client may read status on the connection.
+    pub delivery: Option<Tracking>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -232,6 +235,7 @@ impl From<Operation> for OperationView {
             action: o.action,
             provider_reference: o.provider_reference,
             error: o.error,
+            delivery: None,
             created_at: clock::to_rfc3339(o.created_at),
             updated_at: clock::to_rfc3339(o.updated_at),
         }
@@ -482,18 +486,27 @@ impl PostalServer {
     }
 
     #[tool(
-        description = "Report where a sent item stands: pending, accepted, failed or uncertain. An uncertain item is checked with the provider first.",
+        description = "Report where a sent item stands: pending, accepted, failed or uncertain. An uncertain item is checked with the provider first. For an accepted item it adds the provider's delivery report, if this client may read status.",
         annotations(read_only_hint = true)
     )]
     async fn correspondence_status(
         &self,
         Parameters(OperationRef { operation_id }): Parameters<OperationRef>,
     ) -> Result<Json<OperationView>, String> {
-        self.operations
+        let operation = self
+            .operations
             .status(&self.principal, &operation_id)
             .await
-            .map(|operation| Json(operation.into()))
-            .map_err(operation_error)
+            .map_err(operation_error)?;
+        let delivery = self
+            .operations
+            .track(&self.principal, &operation)
+            .await
+            .map_err(operation_error)?;
+        Ok(Json(OperationView {
+            delivery,
+            ..operation.into()
+        }))
     }
 }
 

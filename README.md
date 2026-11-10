@@ -5,10 +5,12 @@ mailbox accounts and give AI agents exactly the authority they need to use
 them. See [`design.md`](design.md) for the specification and
 [`PLAN.md`](PLAN.md) for the implementation plan.
 
-Status: **M3.** The MCP server runs over stdio. You can connect the built-in
-mock provider, grant an AI client limited permissions, and the client can
-prepare a text document, get a quote and send a letter within those limits.
-The mock provider mails nothing; no real provider is supported yet.
+Status: **M4.** The MCP server runs over stdio. You can connect an account,
+grant an AI client limited permissions, and the client can prepare a text
+document, get a quote and send a letter within those limits. Two providers
+are built in: a mock that mails nothing, and Lob. The Lob adapter is written
+from Lob's documentation and tested against a local stand-in; it has not yet
+been run against Lob.
 
 ## Build and test
 
@@ -45,6 +47,16 @@ postal-mcp admin revoke <grant id>
 postal-mcp admin operations
 postal-mcp admin audit
 ```
+
+For Lob, connect with a test key and set your price for a letter, because
+Lob cannot quote and nothing is sent without a bounded cost:
+
+```sh
+postal-mcp admin connect lob --env test
+postal-mcp admin price lob letter --base USD:120 --per-extra-page 20
+```
+
+Lob letters need a return address (`from`) and plain-text documents.
 
 Money is in minor units: `USD:300` is $3.00. A connected account grants the
 AI nothing until you add a grant, and a revoked grant stops working on the

@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
         .context("no data directory: set --data-dir or HOME")?;
     let store = Store::open(&data_dir)
         .with_context(|| format!("opening the database in {}", data_dir.display()))?;
-    let providers = Registry::builtin();
+    let providers = Registry::builtin().context("starting the HTTP client")?;
 
     let command = cli.command.unwrap_or(Command::Serve {
         client: DEFAULT_CLIENT.into(),

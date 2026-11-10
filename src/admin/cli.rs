@@ -7,6 +7,7 @@ use clap::{Args, Subcommand};
 use super::{Admin, AdminError, GrantRequest, describe_grant};
 use crate::core::{Capability, Money, Timestamp, clock};
 use crate::delegation::Constraints;
+use crate::operations::ProviderPrice;
 use crate::providers::Environment;
 use crate::store::enum_text;
 
@@ -38,6 +39,23 @@ pub enum AdminCommand {
     },
     /// Revoke a grant. Takes effect immediately.
     Revoke { grant_id: String },
+    /// Set your price for a provider product, for providers that cannot
+    /// quote (Lob). Asks for confirmation on the terminal.
+    Price {
+        /// Provider id, e.g. "lob".
+        provider: String,
+        /// Product, e.g. "letter".
+        product: String,
+        /// Price of an item with one billable page, in minor units:
+        /// USD:120 is $1.20.
+        #[arg(long, value_name = "CURRENCY:MINOR", value_parser = parse_money)]
+        base: Money,
+        /// Added for each further billable page, in minor units.
+        #[arg(long, value_name = "MINOR", default_value_t = 0)]
+        per_extra_page: i64,
+    },
+    /// List the prices you have set.
+    Prices,
     /// List sent items, newest first.
     Operations {
         /// Only operations of this client.
@@ -219,6 +237,37 @@ pub async fn run(
         AdminCommand::Revoke { grant_id } => {
             admin.revoke(&grant_id)?;
             writeln!(out, "Revoked: {grant_id}")?;
+        }
+        AdminCommand::Price {
+            provider,
+            product,
+            base,
+            per_extra_page,
+        } => {
+            admin.set_price(ProviderPrice {
+                provider: provider.clone(),
+                product: product.clone(),
+                base,
+                per_extra_page_minor: per_extra_page,
+            })?;
+            writeln!(out, "Price set: {provider} {product}")?;
+        }
+        AdminCommand::Prices => {
+            let prices = admin.prices()?;
+            if prices.is_empty() {
+                writeln!(out, "No prices set.")?;
+            }
+            for p in prices {
+                writeln!(
+                    out,
+                    "{} {}: {} {} + {} per extra page",
+                    p.provider,
+                    p.product,
+                    p.base.amount_minor,
+                    p.base.currency,
+                    p.per_extra_page_minor
+                )?;
+            }
         }
         AdminCommand::Operations { client } => {
             let operations = admin.operations(client.as_deref())?;

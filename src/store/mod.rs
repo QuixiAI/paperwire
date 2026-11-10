@@ -16,7 +16,7 @@ use crate::connections::{Connection, ConnectionStatus, CredentialRef};
 use crate::core::{Capability, Money, Timestamp, clock};
 use crate::delegation::{Grant, Usage};
 use crate::documents::{Document, DocumentFormat};
-use crate::operations::{Operation, OperationStatus, Price, Quote};
+use crate::operations::{Operation, OperationStatus, Price, ProviderPrice, Quote};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -161,8 +161,20 @@ CREATE TABLE usage_reservations (
 CREATE INDEX usage_reservations_grant ON usage_reservations (grant_id, state);
 ";
 
+const SCHEMA_V3: &str = "
+CREATE TABLE provider_prices (
+    provider             TEXT NOT NULL,
+    product              TEXT NOT NULL,
+    currency             TEXT NOT NULL,
+    base_minor           INTEGER NOT NULL,
+    per_extra_page_minor INTEGER NOT NULL,
+    updated_at           INTEGER NOT NULL,
+    PRIMARY KEY (provider, product)
+);
+";
+
 /// Applied in order; `user_version` counts how many have run.
-const MIGRATIONS: [&str; 2] = [SCHEMA_V1, SCHEMA_V2];
+const MIGRATIONS: [&str; 3] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
 
 /// Calls are short, synchronous and serialized by a mutex. That is enough
 /// for a local server with one client.
@@ -267,6 +279,9 @@ on_store! {
     fn operation(&self, id: &str) -> Option<Operation>;
     fn operation_for_quote(&self, quote_id: &str) -> Option<Operation>;
     fn operations(&self, principal: Option<&str>) -> Vec<Operation>;
+    fn set_price(&self, price: &ProviderPrice, at: Timestamp) -> ();
+    fn price(&self, provider: &str, product: &str) -> Option<ProviderPrice>;
+    fn prices(&self) -> Vec<ProviderPrice>;
     fn audit(&self, e: &AuditEvent, at: Timestamp) -> ();
     fn audit_events(&self, limit: u32) -> Vec<AuditRecord>;
 }
@@ -655,6 +670,49 @@ impl Tx<'_> {
         Ok(changed == 1)
     }
 
+    // --- prices -----------------------------------------------------------
+
+    /// Set (or replace) the user's price for a provider's product.
+    pub fn set_price(&self, price: &ProviderPrice, at: Timestamp) -> Result<(), StoreError> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO provider_prices
+             (provider, product, currency, base_minor, per_extra_page_minor, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                price.provider,
+                price.product,
+                price.base.currency,
+                price.base.amount_minor,
+                price.per_extra_page_minor,
+                at.unix_timestamp(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn price(
+        &self,
+        provider: &str,
+        product: &str,
+    ) -> Result<Option<ProviderPrice>, StoreError> {
+        Ok(self
+            .db
+            .query_row(
+                &format!("{PRICE_SELECT} WHERE provider = ?1 AND product = ?2"),
+                [provider, product],
+                price_row,
+            )
+            .optional()?)
+    }
+
+    pub fn prices(&self) -> Result<Vec<ProviderPrice>, StoreError> {
+        let mut statement = self
+            .db
+            .prepare(&format!("{PRICE_SELECT} ORDER BY provider, product"))?;
+        let rows = statement.query_map([], price_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     // --- audit -----------------------------------------------------------
 
     pub fn audit(&self, e: &AuditEvent, at: Timestamp) -> Result<(), StoreError> {
@@ -701,6 +759,18 @@ const GRANT_SELECT: &str = "SELECT id, principal_id, connection_ids, actions, co
 const OPERATION_SELECT: &str = "SELECT id, quote_id, principal_id, connection_id, grant_id, \
      policy_version, action, status, provider_reference, error, created_at, updated_at \
      FROM operations";
+
+const PRICE_SELECT: &str = "SELECT provider, product, currency, base_minor, \
+     per_extra_page_minor FROM provider_prices";
+
+fn price_row(r: &Row<'_>) -> rusqlite::Result<ProviderPrice> {
+    Ok(ProviderPrice {
+        provider: r.get(0)?,
+        product: r.get(1)?,
+        base: Money::new(r.get::<_, String>(2)?, r.get(3)?),
+        per_extra_page_minor: r.get(4)?,
+    })
+}
 
 type Decoded<T> = rusqlite::Result<Result<T, StoreError>>;
 

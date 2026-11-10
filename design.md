@@ -2210,7 +2210,7 @@ Questions to resolve during implementation:
 2. Which provider has the lowest-friction initial account-connection workflow? **Decided:** Lob, in its test environment, is the first provider.
 3. Should the first control plane be a local web UI or CLI? **Decided:** CLI first; a local web UI may follow.
 4. How should individual MCP clients be identified in local deployments? **Decided:** by a name set when the server is started (`serve --client NAME`). Grants are made to that name. It is configuration, not authentication (§5.2).
-5. Which providers offer sufficiently reliable final-cost information for autonomous sending?
+5. Which providers offer sufficiently reliable final-cost information for autonomous sending? **Partly decided:** Lob does not quote, so the user sets their own price per product with `admin price`. It is used as an estimated upper bound, and nothing is sent without one.
 6. Should grant policies use a custom JSON schema, a policy engine library, or a capability-based authorization model? **Decided:** a custom schema evaluated in Rust.
 7. How should grants be migrated when provider capabilities change?
 8. Which operations require one-time approval even under a broader delegation?

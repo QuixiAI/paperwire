@@ -14,7 +14,7 @@ use crate::connections::{
 };
 use crate::core::{Capability, Secret, Timestamp, clock, new_id};
 use crate::delegation::{Constraints, Grant};
-use crate::operations::{self, Operation, OperationStatus};
+use crate::operations::{self, Operation, OperationStatus, ProviderPrice};
 use crate::providers::{AuthMethod, Environment, ProviderError, Registry};
 use crate::store::{AuditEvent, AuditRecord, Store, StoreError, enum_text};
 
@@ -363,6 +363,55 @@ impl Admin<'_> {
         Ok(())
     }
 
+    /// Set your price for a provider's product, for providers that cannot
+    /// quote. Spending limits are checked against it, so a price set too
+    /// low lets the AI spend more than its limits intend: confirmed like a
+    /// grant.
+    pub fn set_price(&mut self, price: ProviderPrice) -> Result<(), AdminError> {
+        if self.providers.get(&price.provider).is_none() {
+            return Err(AdminError::Invalid(format!(
+                "unknown provider {:?}",
+                price.provider
+            )));
+        }
+        if price.base.amount_minor < 0 || price.per_extra_page_minor < 0 {
+            return Err(AdminError::Invalid("prices must not be negative".into()));
+        }
+        self.confirm(&format!(
+            "Set the price of a {} {} to {} {} for the first page plus {} for each \
+             further page (in minor units, e.g. cents).\n\
+             Spending limits are checked against this price. If the provider charges \
+             more, the AI can spend more than its limits allow.",
+            price.provider,
+            price.product,
+            price.base.amount_minor,
+            price.base.currency,
+            price.per_extra_page_minor,
+        ))?;
+        let now = clock::now();
+        self.store.set_price(&price, now)?;
+        self.store.audit(
+            &AuditEvent {
+                kind: "price.set".into(),
+                detail: Some(format!(
+                    "{} {}: {} {} + {} per extra page",
+                    price.provider,
+                    price.product,
+                    price.base.amount_minor,
+                    price.base.currency,
+                    price.per_extra_page_minor
+                )),
+                ..AuditEvent::default()
+            },
+            now,
+        )?;
+        Ok(())
+    }
+
+    pub fn prices(&self) -> Result<Vec<ProviderPrice>, AdminError> {
+        Ok(self.store.prices()?)
+    }
+
     pub fn operations(&self, principal: Option<&str>) -> Result<Vec<Operation>, AdminError> {
         Ok(self.store.operations(principal)?)
     }
@@ -444,7 +493,7 @@ mod tests {
     use crate::operations::{MailItem, Price};
     use crate::providers::{
         Account, BoxFuture, Channel, Lookup, MockProvider, ProviderAdapter, ProviderInfo,
-        Submission, SubmitError,
+        Submission, SubmitError, Tracking,
     };
 
     /// Answers prompts from a script and records what it was shown.
@@ -528,6 +577,14 @@ mod tests {
             _: &'a str,
             _: Account<'a>,
         ) -> BoxFuture<'a, Result<Lookup, ProviderError>> {
+            unimplemented!("not used by admin tests")
+        }
+
+        fn track<'a>(
+            &'a self,
+            _: &'a str,
+            _: Account<'a>,
+        ) -> BoxFuture<'a, Result<Tracking, ProviderError>> {
             unimplemented!("not used by admin tests")
         }
     }
