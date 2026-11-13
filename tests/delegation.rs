@@ -413,3 +413,66 @@ async fn send_a_letter_then_revoke() {
         );
     }
 }
+
+/// A PDF is imported by path, but only from a directory the user allowed.
+#[tokio::test]
+async fn pdfs_are_read_only_from_allowed_directories() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = ControlPlane::open(dir.path());
+    let connection = control.connect_mock().await;
+    control.grant_letters("assistant", &connection);
+
+    let allowed = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let inside = allowed.path().join("reply.pdf");
+    let outside = elsewhere.path().join("private.pdf");
+    std::fs::write(&inside, common::sample_pdf(2)).unwrap();
+    std::fs::write(&outside, common::sample_pdf(1)).unwrap();
+
+    let mut assistant = Server::start_with(
+        dir.path(),
+        "assistant",
+        &["--document-dir", allowed.path().to_str().unwrap()],
+    );
+    let document = assistant.call_ok("documents_prepare", json!({"path": inside}));
+    assert_eq!(document["format"], "pdf");
+    assert_eq!(document["page_count"], 2);
+    assert_eq!(document["page_count_estimated"], false);
+
+    let refused = assistant.call("documents_prepare", json!({"path": outside}));
+    assert_eq!(refused["isError"], true);
+    assert!(
+        refused["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("--document-dir")
+    );
+    let both = assistant.call("documents_prepare", json!({"path": inside, "content": "x"}));
+    assert_eq!(both["isError"], true);
+
+    // The PDF's real page count is what gets priced: 80 + 2 * 20.
+    let quote = assistant.call_ok(
+        "correspondence_quote",
+        json!({
+            "connection_id": connection.id,
+            "product": "letter",
+            "to": {
+                "name": "Jane Doe", "line1": "1 Main St", "city": "Springfield",
+                "state": "IL", "postal_code": "62701", "country": "US"
+            },
+            "document_ids": [document["document_id"]]
+        }),
+    );
+    assert_eq!(quote["page_count"], 2);
+    assert_eq!(quote["price"]["amount_minor"], 120);
+    let sent = assistant.call_ok(
+        "correspondence_send",
+        json!({"quote_id": quote["quote_id"]}),
+    );
+    assert_eq!(sent["accepted"], true, "{sent}");
+
+    // A server started without the option reads no file at all.
+    let mut plain = Server::start(dir.path(), "assistant");
+    let refused = plain.call("documents_prepare", json!({"path": inside}));
+    assert_eq!(refused["isError"], true);
+}

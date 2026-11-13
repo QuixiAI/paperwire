@@ -18,8 +18,14 @@ pub struct Server {
 impl Server {
     /// Start `postal-mcp serve --client <client>` on the database in `data_dir`.
     pub fn start(data_dir: &Path, client: &str) -> Self {
+        Self::start_with(data_dir, client, &[])
+    }
+
+    /// As [`Server::start`], with extra `serve` arguments.
+    pub fn start_with(data_dir: &Path, client: &str, serve_args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_postal-mcp"))
             .args(["serve", "--client", client])
+            .args(serve_args)
             .arg("--data-dir")
             .arg(data_dir)
             .env("POSTAL_MCP_LOG", "warn")
@@ -109,4 +115,31 @@ impl Server {
         assert_ne!(result["isError"], true, "{name}: {result}");
         result["structuredContent"].clone()
     }
+}
+
+/// A minimal PDF of `pages` blank US Letter pages.
+pub fn sample_pdf(pages: u32) -> Vec<u8> {
+    use lopdf::{Document, Object, Stream, dictionary};
+
+    let mut document = Document::with_version("1.5");
+    let tree = document.new_object_id();
+    let kids: Vec<Object> = (0..pages)
+        .map(|_| {
+            let content = document.add_object(Stream::new(dictionary! {}, Vec::new()));
+            let page = dictionary! { "Type" => "Page", "Parent" => tree, "Contents" => content };
+            document.add_object(page).into()
+        })
+        .collect();
+    let tree_node = dictionary! {
+        "Type" => "Pages",
+        "Kids" => kids,
+        "Count" => i64::from(pages),
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+    };
+    document.objects.insert(tree, Object::Dictionary(tree_node));
+    let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => tree });
+    document.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    bytes
 }

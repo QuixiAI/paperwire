@@ -2,6 +2,8 @@
 //! responses follow Lob's published API; none of this has run against Lob
 //! itself.
 
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,7 +12,7 @@ use postal_mcp::connections::{
 };
 use postal_mcp::core::{Capability, Money, Secret, clock};
 use postal_mcp::delegation::{Constraints, Grant, Reason};
-use postal_mcp::documents::{self, DocumentFormat};
+use postal_mcp::documents::{self, Document, DocumentDirs, DocumentFormat};
 use postal_mcp::http::{ReqwestTransport, RetryPolicy, Retrying};
 use postal_mcp::operations::{
     Address, Operation, OperationError, OperationStatus, Operations, PriceKind, ProviderPrice,
@@ -134,19 +136,49 @@ fn letter(id: &str) -> ResponseTemplate {
 }
 
 impl World {
-    async fn try_quote(&self, from: Option<Address>) -> Result<Quote, OperationError> {
-        let text = "Dear Jane,\n\nThank you <very> much.\n";
-        let document =
-            documents::prepare(&self.store, CLIENT, None, DocumentFormat::Text, text).unwrap();
+    fn text(&self, format: DocumentFormat, content: &str) -> Document {
+        documents::prepare(&self.store, CLIENT, None, format, content).unwrap()
+    }
+
+    fn pdf(&self, pages: u32) -> Document {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("letter.pdf");
+        std::fs::write(&path, common::sample_pdf(pages)).unwrap();
+        let allowed = DocumentDirs::new(&[dir.path().to_owned()]).unwrap();
+        documents::import_pdf(&self.store, CLIENT, None, &path, &allowed).unwrap()
+    }
+
+    async fn quote_documents(
+        &self,
+        from: Option<Address>,
+        documents: &[Document],
+    ) -> Result<Quote, OperationError> {
         let request = QuoteRequest {
             connection_id: CONN.into(),
             product: "letter".into(),
             to: address("Jane Doe"),
             from,
-            document_ids: vec![document.id],
+            document_ids: documents.iter().map(|d| d.id.clone()).collect(),
         };
         let (quote, _) = self.operations.quote(CLIENT, request).await?;
         Ok(quote)
+    }
+
+    async fn try_quote(&self, from: Option<Address>) -> Result<Quote, OperationError> {
+        let text = "Dear Jane,\n\nThank you <very> much.\n";
+        let document = self.text(DocumentFormat::Text, text);
+        self.quote_documents(from, &[document]).await
+    }
+
+    async fn send_documents(&self, documents: &[Document]) -> Operation {
+        let quote = self
+            .quote_documents(Some(address("Eric Sender")), documents)
+            .await
+            .unwrap();
+        match self.operations.send(CLIENT, &quote.id).await.unwrap() {
+            SendOutcome::Operation(operation) => operation,
+            SendOutcome::Denied(evaluation) => panic!("denied: {evaluation:?}"),
+        }
     }
 
     async fn quote(&self) -> Quote {
@@ -437,4 +469,109 @@ async fn tracking_needs_read_permission_and_maps_lobs_events() {
     world.store.revoke_grant(GRANT, clock::now()).unwrap();
     let tracking = world.operations.track(CLIENT, &operation).await.unwrap();
     assert_eq!(tracking, None);
+}
+
+#[tokio::test]
+async fn a_pdf_is_uploaded_unchanged_as_multipart() {
+    let world = world(limits(), true).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/letters"))
+        .and(header("authorization", BASIC))
+        .respond_with(letter("ltr_pdf"))
+        .expect(1)
+        .mount(&world.server)
+        .await;
+
+    let pdf = world.pdf(3);
+    assert_eq!((pdf.page_count, pdf.page_count_estimated), (3, false));
+    // Three pages plus Lob's address page: 120 + 3 * 20.
+    let quote = world
+        .quote_documents(Some(address("Eric Sender")), std::slice::from_ref(&pdf))
+        .await
+        .unwrap();
+    assert_eq!(quote.price.amount, Some(Money::new("USD", 180)));
+    let SendOutcome::Operation(operation) = world.operations.send(CLIENT, &quote.id).await.unwrap()
+    else {
+        panic!("denied");
+    };
+    assert_eq!(operation.status, OperationStatus::Accepted);
+
+    let creates = world.creates().await;
+    let request = &creates[0];
+    assert!(header_value(request, "content-type").starts_with("multipart/form-data; boundary="));
+    assert_eq!(header_value(request, "idempotency-key"), operation.id);
+    // The file's bytes are in the body exactly as imported.
+    let found = request
+        .body
+        .windows(pdf.content.len())
+        .any(|window| window == pdf.content.as_slice());
+    assert!(found, "the PDF bytes are not in the upload");
+    let body = String::from_utf8_lossy(&request.body);
+    for expected in [
+        "name=\"to[name]\"",
+        "Jane Doe",
+        "name=\"to[address_zip]\"",
+        "name=\"from[address_line1]\"",
+        "name=\"address_placement\"",
+        "insert_blank_page",
+        "name=\"use_type\"",
+        "name=\"metadata[operation_id]\"",
+        "filename=\"letter.pdf\"",
+        "Content-Type: application/pdf",
+    ] {
+        assert!(
+            body.contains(expected),
+            "{expected} missing from the upload"
+        );
+    }
+    assert!(body.contains(&operation.id));
+    // An address line that was not given is not sent as an empty field.
+    assert!(!body.contains("address_line2"));
+}
+
+#[tokio::test]
+async fn a_pdf_cannot_be_mixed_with_other_documents() {
+    let world = world(limits(), true).await;
+    let documents = [world.pdf(1), world.text(DocumentFormat::Text, "cover note")];
+    let result = world
+        .quote_documents(Some(address("Eric Sender")), &documents)
+        .await;
+    let Err(OperationError::Invalid(message)) = result else {
+        panic!("quoted a mixed letter");
+    };
+    assert!(message.contains("single PDF"), "{message}");
+}
+
+#[tokio::test]
+async fn markdown_is_sent_as_formatted_html_and_text_documents_combine() {
+    let world = world(limits(), true).await;
+    Mock::given(method("POST"))
+        .respond_with(letter("ltr_md"))
+        .mount(&world.server)
+        .await;
+    let documents = [
+        world.text(DocumentFormat::Markdown, "# Notice\n\nPlease **reply**.\n"),
+        world.text(DocumentFormat::Text, "Enclosure <1>"),
+    ];
+    let operation = world.send_documents(&documents).await;
+    assert_eq!(operation.status, OperationStatus::Accepted);
+
+    let creates = world.creates().await;
+    let body: Value = serde_json::from_slice(&creates[0].body).unwrap();
+    let html = body["file"].as_str().unwrap();
+    assert!(html.contains("<h1>Notice</h1>"), "{html}");
+    assert!(html.contains("<strong>reply</strong>"), "{html}");
+    assert!(html.contains("Enclosure &lt;1&gt;"), "{html}");
+    assert!(html.contains("doc text next"), "{html}");
+}
+
+#[tokio::test]
+async fn text_too_long_for_lobs_inline_limit_fails_before_anything_is_sent() {
+    let world = world(Constraints::default(), true).await;
+    let long = world.text(DocumentFormat::Text, &"word ".repeat(2500));
+    let operation = world.send_documents(&[long]).await;
+    assert_eq!(operation.status, OperationStatus::Failed);
+    assert!(operation.error.unwrap().contains("as a PDF"));
+    assert!(world.creates().await.is_empty());
+    assert_eq!(world.spent(), 0);
 }

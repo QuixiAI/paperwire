@@ -24,13 +24,21 @@ use super::{
 };
 use crate::core::{Capability, Secret};
 use crate::delegation::AuthorizedOperation;
-use crate::documents::{Document, DocumentFormat};
-use crate::http::{HttpError, Method, Request, Response, Transport};
+use crate::documents::{Document, DocumentFormat, render_html};
+use crate::http::{HttpError, Method, Part, Request, Response, Transport};
 use crate::operations::{Address, MailItem, Price, PriceKind};
 
 const BASE_URL: &str = "https://api.lob.com";
 const API_VERSION: &str = "2020-02-11";
 const IDEMPOTENCY_HEADER: &str = "Idempotency-Key";
+
+// How every letter is printed and mailed. Fixed for now.
+const COLOR: bool = false;
+const DOUBLE_SIDED: bool = true;
+/// The address goes on an inserted first page, leaving the document as is.
+const ADDRESS_PLACEMENT: &str = "insert_blank_page";
+const MAIL_TYPE: &str = "usps_first_class";
+const USE_TYPE: &str = "operational";
 
 /// Lob accepts a letter's content inline as HTML only up to this length.
 pub const MAX_INLINE_HTML: usize = 10_000;
@@ -109,46 +117,44 @@ fn address(a: &Address) -> Value {
     })
 }
 
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-/// The documents as one HTML letter, laid out to match the page estimate:
-/// US Letter, one-inch margins, 12-point monospaced text at six lines to
-/// the inch. Document text is escaped, so it cannot inject markup or load
-/// anything (§12.4).
-pub fn render_html(documents: &[Document]) -> Result<String, String> {
-    let mut body = String::new();
-    for (i, document) in documents.iter().enumerate() {
-        if document.format != DocumentFormat::Text {
-            return Err("Lob letters support plain-text documents only for now".into());
-        }
-        let text = std::str::from_utf8(&document.content)
-            .map_err(|_| "a document is not valid UTF-8 text".to_owned())?;
-        let class = if i == 0 { "doc" } else { "doc next" };
-        body.push_str(&format!(
-            "<div class=\"{class}\">{}</div>",
-            escape_html(text)
-        ));
-    }
-    let html = format!(
-        "<html><head><meta charset=\"utf-8\"><style>\
-         @page{{size:8.5in 11in;margin:1in}}\
-         body{{margin:0;font-family:Courier,monospace;font-size:12pt;line-height:12pt}}\
-         .doc{{white-space:pre-wrap;overflow-wrap:anywhere}}\
-         .next{{page-break-before:always}}\
-         </style></head><body>{body}</body></html>"
-    );
+/// The letter's content as inline HTML, within Lob's length limit.
+fn inline_html(documents: &[Document]) -> Result<String, String> {
+    let html = render_html(documents)?;
     if html.len() > MAX_INLINE_HTML {
         return Err(format!(
             "the letter is too long to send to Lob as text ({} characters of HTML; \
-             the limit is {MAX_INLINE_HTML})",
+             the limit is {MAX_INLINE_HTML}). Send it as a PDF instead",
             html.len()
         ));
     }
     Ok(html)
+}
+
+/// Lob's fields for an address, as multipart form fields under `prefix`.
+fn address_parts(prefix: &str, a: &Address, parts: &mut Vec<Part>) {
+    let fields = [
+        ("name", Some(&a.name)),
+        ("address_line1", Some(&a.line1)),
+        ("address_line2", a.line2.as_ref()),
+        ("address_city", Some(&a.city)),
+        ("address_state", a.state.as_ref()),
+        ("address_zip", Some(&a.postal_code)),
+        ("address_country", Some(&a.country)),
+    ];
+    for (field, value) in fields {
+        if let Some(value) = value {
+            parts.push(field_part(&format!("{prefix}[{field}]"), value));
+        }
+    }
+}
+
+fn field_part(name: &str, value: &str) -> Part {
+    Part {
+        name: name.to_owned(),
+        filename: None,
+        content_type: None,
+        data: value.as_bytes().to_vec(),
+    }
 }
 
 /// What can be checked about an item before any money is involved.
@@ -162,6 +168,20 @@ fn validate(item: &MailItem) -> Result<(), ProviderError> {
     if item.from.is_none() {
         return Err(ProviderError::InvalidItem(
             "Lob requires a return address: supply `from`".into(),
+        ));
+    }
+    // Lob takes one file per letter: text documents are combined into one
+    // HTML file, but a PDF cannot be combined with anything.
+    let pdfs = item
+        .documents
+        .iter()
+        .filter(|d| d.format == DocumentFormat::Pdf)
+        .count();
+    if pdfs > 0 && item.documents.len() > 1 {
+        return Err(ProviderError::InvalidItem(
+            "a Lob letter is either one PDF or text documents, not a mix: \
+             combine them into a single PDF first"
+                .into(),
         ));
     }
     Ok(())
@@ -244,8 +264,12 @@ impl<T: Transport + 'static> ProviderAdapter for LobAdapter<T> {
             // nothing reached Lob.
             let rejected = |e: ProviderError| SubmitError::Rejected(e.to_string());
             validate(item).map_err(rejected)?;
-            let html = render_html(documents).map_err(SubmitError::Rejected)?;
             let operation_id = authorized.operation_id();
+            let description = format!("postal-mcp {operation_id}");
+            let from = item
+                .from
+                .as_ref()
+                .ok_or_else(|| SubmitError::Rejected("Lob requires a return address".into()))?;
             let request = self
                 .request(
                     Method::Post,
@@ -254,19 +278,45 @@ impl<T: Transport + 'static> ProviderAdapter for LobAdapter<T> {
                     account.credential,
                 )
                 .map_err(rejected)?
-                .idempotency_key(IDEMPOTENCY_HEADER, operation_id)
-                .json(json!({
-                    "description": format!("postal-mcp {operation_id}"),
+                .idempotency_key(IDEMPOTENCY_HEADER, operation_id);
+            let request = match documents {
+                // A PDF is uploaded as it is, with the other fields as form
+                // fields beside it.
+                [pdf] if pdf.format == DocumentFormat::Pdf => {
+                    let mut parts = vec![field_part("description", &description)];
+                    address_parts("to", &item.to, &mut parts);
+                    address_parts("from", from, &mut parts);
+                    for (name, value) in [
+                        ("color", COLOR.to_string()),
+                        ("double_sided", DOUBLE_SIDED.to_string()),
+                        ("address_placement", ADDRESS_PLACEMENT.to_owned()),
+                        ("mail_type", MAIL_TYPE.to_owned()),
+                        ("use_type", USE_TYPE.to_owned()),
+                        ("metadata[operation_id]", operation_id.to_owned()),
+                    ] {
+                        parts.push(field_part(name, &value));
+                    }
+                    parts.push(Part {
+                        name: "file".into(),
+                        filename: Some("letter.pdf".into()),
+                        content_type: Some("application/pdf".into()),
+                        data: pdf.content.clone(),
+                    });
+                    request.multipart(parts)
+                }
+                _ => request.json(json!({
+                    "description": description,
                     "to": address(&item.to),
-                    "from": item.from.as_ref().map(address),
-                    "file": html,
-                    "color": false,
-                    "double_sided": true,
-                    "address_placement": "insert_blank_page",
-                    "mail_type": "usps_first_class",
-                    "use_type": "operational",
+                    "from": address(from),
+                    "file": inline_html(documents).map_err(SubmitError::Rejected)?,
+                    "color": COLOR,
+                    "double_sided": DOUBLE_SIDED,
+                    "address_placement": ADDRESS_PLACEMENT,
+                    "mail_type": MAIL_TYPE,
+                    "use_type": USE_TYPE,
                     "metadata": {"operation_id": operation_id},
-                }));
+                })),
+            };
 
             let response = match self.transport.send(request).await {
                 Ok(response) => response,
@@ -368,43 +418,6 @@ impl<T: Transport + 'static> ProviderAdapter for LobAdapter<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::clock;
-
-    fn document(format: DocumentFormat, text: &str) -> Document {
-        Document {
-            id: "doc_1".into(),
-            principal_id: "assistant".into(),
-            title: None,
-            format,
-            content: text.as_bytes().to_vec(),
-            sha256: String::new(),
-            page_count: 1,
-            page_count_estimated: true,
-            created_at: clock::now(),
-        }
-    }
-
-    #[test]
-    fn html_escapes_document_text() {
-        let text = "Dear <b>Jane</b> & co,\n<script src=\"http://evil.example/x.js\"></script>";
-        let html = render_html(&[document(DocumentFormat::Text, text)]).unwrap();
-        assert!(html.contains("Dear &lt;b&gt;Jane&lt;/b&gt; &amp; co,"));
-        assert!(!html.contains("<script"));
-        assert!(!html.contains("<b>"));
-    }
-
-    #[test]
-    fn html_separates_documents_and_enforces_lob_limit() {
-        let one = document(DocumentFormat::Text, "first");
-        let html = render_html(&[one.clone(), one.clone()]).unwrap();
-        assert_eq!(html.matches("class=\"doc\"").count(), 1);
-        assert_eq!(html.matches("class=\"doc next\"").count(), 1);
-
-        let long = document(DocumentFormat::Text, &"x".repeat(MAX_INLINE_HTML));
-        assert!(render_html(&[long]).unwrap_err().contains("too long"));
-        let markdown = document(DocumentFormat::Markdown, "# Hi");
-        assert!(render_html(&[markdown]).unwrap_err().contains("plain-text"));
-    }
 
     #[test]
     fn key_must_match_the_connection_environment() {

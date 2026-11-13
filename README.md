@@ -24,6 +24,7 @@ cargo test
 ```sh
 cargo run -- serve                      # MCP over stdio (the default command)
 cargo run -- serve --client assistant   # name the AI client this instance serves
+cargo run -- serve --document-dir ~/Letters   # let the client import PDFs from here
 ```
 
 To use it from Claude Code:
@@ -56,7 +57,12 @@ postal-mcp admin connect lob --env test
 postal-mcp admin price lob letter --base USD:120 --per-extra-page 20
 ```
 
-Lob letters need a return address (`from`) and plain-text documents.
+Lob letters need a return address (`from`). A letter is either one PDF or
+text and Markdown documents.
+
+Documents are plain text or Markdown given inline, or a PDF with US Letter
+pages. The server reads PDF files only from directories you name with
+`serve --document-dir`; without that option it reads no files at all.
 
 Money is in minor units: `USD:300` is $3.00. A connected account grants the
 AI nothing until you add a grant, and a revoked grant stops working on the

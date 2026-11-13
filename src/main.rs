@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 use postal_mcp::admin::cli::AdminCommand;
 use postal_mcp::admin::{Admin, InteractiveTerminal, cli};
 use postal_mcp::connections::KeyringStore;
+use postal_mcp::documents::DocumentDirs;
 use postal_mcp::mcp::PostalServer;
 use postal_mcp::providers::Registry;
 use postal_mcp::store::{Store, default_data_dir};
@@ -31,6 +32,10 @@ enum Command {
         /// made to this name with `admin grant --client`.
         #[arg(long, default_value = DEFAULT_CLIENT)]
         client: String,
+        /// A directory the AI client may import PDF files from. Repeatable.
+        /// Without one, no file is ever read.
+        #[arg(long = "document-dir", value_name = "DIR")]
+        document_dirs: Vec<PathBuf>,
     },
     /// Manage connections and permissions. Not available to the AI.
     Admin {
@@ -63,10 +68,17 @@ async fn main() -> anyhow::Result<()> {
 
     let command = cli.command.unwrap_or(Command::Serve {
         client: DEFAULT_CLIENT.into(),
+        document_dirs: Vec::new(),
     });
     match command {
-        Command::Serve { client } => {
-            let service = PostalServer::new(providers, store, Arc::new(KeyringStore), client)
+        Command::Serve {
+            client,
+            document_dirs,
+        } => {
+            let document_dirs =
+                DocumentDirs::new(&document_dirs).context("opening a --document-dir")?;
+            let secrets = Arc::new(KeyringStore);
+            let service = PostalServer::new(providers, store, secrets, document_dirs, client)
                 .serve(stdio())
                 .await?;
             service.waiting().await?;

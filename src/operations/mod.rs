@@ -18,7 +18,7 @@ use time::Duration;
 use crate::connections::{Connection, SecretStore, resolve};
 use crate::core::{Capability, Money, Timestamp, clock, new_id};
 use crate::delegation::{self, Evaluation, OperationContext};
-use crate::documents::{self, Document};
+use crate::documents::{self, Document, DocumentFormat};
 use crate::providers::{
     Account, Lookup, ProviderAdapter, ProviderError, Registry, Submission, SubmitError, Tracking,
 };
@@ -79,6 +79,8 @@ impl Address {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemDocument {
     pub document_id: String,
+    #[serde(default)]
+    pub format: DocumentFormat,
     pub sha256: String,
     pub page_count: u32,
 }
@@ -290,6 +292,7 @@ impl Operations {
             };
             item_documents.push(ItemDocument {
                 document_id: document.id,
+                format: document.format,
                 sha256: document.sha256,
                 page_count: document.page_count,
             });

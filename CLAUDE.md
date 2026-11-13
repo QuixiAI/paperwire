@@ -18,6 +18,9 @@ spec; `PLAN.md` tracks milestones and Rust-specific decisions.
 - Evaluate and reserve inside one `Store::atomically` transaction. An uncertain
   outcome keeps its reservation held and is never resubmitted.
 - Every lookup by id (document, quote, operation) also checks the owning client.
+- The server reads files only through `documents::DocumentDirs`, which is empty
+  unless the user passes `serve --document-dir`.
+- Document content never becomes live markup: render through `documents::render_html`.
 - All rmcp-specific code stays in `src/mcp/`.
 - Adapters reach the network only through `http::Transport`.
 - An `HttpError::Ambiguous` outcome is never retried automatically (design.md §19.2).

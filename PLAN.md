@@ -166,9 +166,24 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
 - **Fixed choices worth revisiting:** black and white, double-sided,
   first-class mail, `use_type: operational`.
 
-### M5: Documents
-- PDF passthrough (hash, size, page count).
-- Markdown/text → sanitized HTML, which Lob renders.
+### M5: Documents ✅
+- PDF: imported by path, stored unchanged, hashed, with the real page count
+  (`documents/pdf.rs`, `lopdf`). Rejected if not a PDF, damaged,
+  password-protected, over 10 MiB or 100 pages, or if any page is not
+  upright US Letter.
+- File access is default deny: `serve --document-dir DIR` (repeatable) names
+  the directories PDFs may be read from. Paths are resolved through
+  symlinks and `..` first. Without the option no file is read, so a client
+  cannot use the server to read and mail arbitrary files.
+- Markdown and text → HTML (`documents/render.rs`, `pulldown-cmark`). Text
+  is escaped. In Markdown, raw HTML prints as text, images are reduced to
+  their alt text and links to "text (address)", so the page loads nothing.
+  Markdown keeps the 12-point monospaced grid, so the page estimate holds.
+- Lob: a PDF is uploaded as multipart with the other fields as form fields.
+  A letter is one PDF or any number of text/Markdown documents, not a mix.
+- **Not yet:** DOCX, HTML and image input; merging several PDFs;
+  `documents_preview`; page sizes other than US Letter. Text and Markdown
+  page counts are still estimates.
 
 ### M6: MVP demo (§29) as an integration test
 - Connect → grant "domestic letters < $3" → send → status → revoke → send denied.

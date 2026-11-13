@@ -1005,6 +1005,8 @@ Document IDs are not sufficient authorization.
 
 The server must check resource-level access for every document read.
 
+A local server may import a document from a file path only inside directories the user has explicitly allowed (`serve --document-dir`). By default it reads no files, so an AI client cannot use it to read and then mail files it was never given.
+
 ## 12.6 Agent document generation
 
 The MCP server should not duplicate a general-purpose AI document-authoring system.

@@ -12,7 +12,9 @@ use std::sync::Arc;
 use crate::connections::{Connection, ConnectionStatus, SecretStore};
 use crate::core::{Capability, Money, clock};
 use crate::delegation::{self, Constraints, Decision, Evaluation, OperationContext, Reason};
-use crate::documents::{self, DocumentFormat};
+use std::path::Path;
+
+use crate::documents::{self, DocumentDirs, DocumentFormat};
 use crate::operations::{
     Address, Operation, OperationError, OperationStatus, Operations, PriceKind, QuoteRequest,
     SendOutcome,
@@ -25,6 +27,7 @@ pub struct PostalServer {
     providers: Registry,
     store: Store,
     operations: Operations,
+    document_dirs: DocumentDirs,
     /// The client this instance serves. It comes from server configuration
     /// (`serve --client`), never from tool arguments (design.md §5.2).
     principal: String,
@@ -135,11 +138,14 @@ impl From<Evaluation> for PermissionResult {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DocumentPrepare {
-    /// The document text.
-    pub content: String,
-    /// "text" (the default) or "markdown".
+    /// The document as inline text or Markdown. Give this or `path`.
+    pub content: Option<String>,
+    /// The format of `content`: "text" (the default) or "markdown".
     #[serde(default)]
     pub format: DocumentFormat,
+    /// Absolute path of a PDF file to import. It must be inside a
+    /// directory the user allowed when starting the server.
+    pub path: Option<String>,
     pub title: Option<String>,
 }
 
@@ -150,8 +156,9 @@ pub struct DocumentView {
     pub sha256: String,
     pub size_bytes: usize,
     pub page_count: u32,
-    /// True when the page count is an estimate from a layout rule, not a
-    /// count of rendered pages.
+    pub format: DocumentFormat,
+    /// True when the page count is an estimate from a layout rule. A PDF's
+    /// count is exact.
     pub page_count_estimated: bool,
 }
 
@@ -270,9 +277,11 @@ impl PostalServer {
         providers: Registry,
         store: Store,
         secrets: Arc<dyn SecretStore>,
+        document_dirs: DocumentDirs,
         principal: impl Into<String>,
     ) -> Self {
         Self {
+            document_dirs,
             operations: Operations::new(store.clone(), providers.clone(), secrets),
             providers,
             store,
@@ -386,7 +395,7 @@ impl PostalServer {
     }
 
     #[tool(
-        description = "Import a document to send: plain text or Markdown, given inline. Returns a document_id for correspondence_quote, with its hash and page count. The document is visible only to this client.",
+        description = "Import a document to send. Give plain text or Markdown inline as `content`, or the `path` of a PDF file (US Letter pages) in a directory the user has allowed. Returns a document_id for correspondence_quote, with its hash and page count. The document is visible only to this client.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -397,19 +406,30 @@ impl PostalServer {
         &self,
         Parameters(request): Parameters<DocumentPrepare>,
     ) -> Result<Json<DocumentView>, String> {
-        let document = documents::prepare(
-            &self.store,
-            &self.principal,
-            request.title,
-            request.format,
-            &request.content,
-        )
+        let document = match (&request.content, &request.path) {
+            (Some(content), None) => documents::prepare(
+                &self.store,
+                &self.principal,
+                request.title,
+                request.format,
+                content,
+            ),
+            (None, Some(path)) => documents::import_pdf(
+                &self.store,
+                &self.principal,
+                request.title,
+                Path::new(path),
+                &self.document_dirs,
+            ),
+            _ => return Err("give exactly one of `content` or `path`".into()),
+        }
         .map_err(|e| match e {
             documents::DocumentError::Store(e) => internal(e),
             other => other.to_string(),
         })?;
         Ok(Json(DocumentView {
             document_id: document.id,
+            format: document.format,
             sha256: document.sha256,
             size_bytes: document.content.len(),
             page_count: document.page_count,
