@@ -185,7 +185,7 @@ impl Admin<'_> {
         self.confirm(&format!(
             "Connect a {} account ({} environment).\n\
              This stores the connection only. The AI can do nothing with it until you \
-             grant permissions with `postal-mcp admin grant`.",
+             grant permissions with `paperwire admin grant`.",
             info.name,
             enum_text(&environment),
         ))?;
@@ -1055,7 +1055,7 @@ mod tests {
             ["connection.created", "price.set", "grant.created"]
         );
         let text = login::describe_outcome(&outcome);
-        assert!(text.contains("postal-mcp serve\n"), "{text}");
+        assert!(text.contains("paperwire serve\n"), "{text}");
         assert!(!text.contains("--client"), "{text}");
         assert!(terminal.asked.iter().all(|q| !q.contains("client name")));
     }

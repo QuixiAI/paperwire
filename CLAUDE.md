@@ -1,4 +1,4 @@
-# postal-mcp
+# paperwire
 
 Rust implementation of the Universal Correspondence MCP. `design.md` is the
 spec; `PLAN.md` tracks milestones and Rust-specific decisions.

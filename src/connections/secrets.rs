@@ -29,7 +29,7 @@ pub trait SecretStore: Send + Sync {
 pub struct KeyringStore;
 
 impl KeyringStore {
-    const SERVICE: &'static str = "postal-mcp";
+    const SERVICE: &'static str = "paperwire";
 
     fn entry(connection_id: &str) -> Result<keyring::Entry, SecretError> {
         keyring::Entry::new(Self::SERVICE, connection_id).map_err(store_error)
@@ -123,7 +123,7 @@ mod tests {
         assert_eq!(secret.unwrap().expose(), "k");
         assert!(matches!(
             resolve(
-                &CredentialRef::Env("POSTAL_MCP_TEST_UNSET_VAR".into()),
+                &CredentialRef::Env("PAPERWIRE_TEST_UNSET_VAR".into()),
                 "c",
                 &store
             ),

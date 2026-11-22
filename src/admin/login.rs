@@ -1,4 +1,4 @@
-//! `postal-mcp login`: connect an account and let an AI client use it, in
+//! `paperwire login`: connect an account and let an AI client use it, in
 //! one guided step.
 //!
 //! It asks its questions, verifies the credential with the provider, and
@@ -265,7 +265,7 @@ impl Admin<'_> {
             .collect();
         if !actions.contains(&Capability::PostalSendLetter) {
             return Err(AdminError::Invalid(format!(
-                "this {} account cannot send letters; use `postal-mcp admin grant` \
+                "this {} account cannot send letters; use `paperwire admin grant` \
                  to grant what it can do",
                 info.name
             )));
@@ -366,21 +366,21 @@ pub fn describe_outcome(outcome: &LoginOutcome) -> String {
     if outcome.price_missing {
         lines.push(format!(
             "\nNo price is set, so nothing can be sent yet. Set one with:\n  \
-             postal-mcp admin price {} {PRODUCT} --base {CURRENCY}:<cents> \
+             paperwire admin price {} {PRODUCT} --base {CURRENCY}:<cents> \
              --per-extra-page <cents>",
             outcome.connection.provider
         ));
     }
     let client = &outcome.grant.principal_id;
     let serve = if client == DEFAULT_CLIENT {
-        "postal-mcp serve".to_owned()
+        "paperwire serve".to_owned()
     } else {
-        format!("postal-mcp serve --client {client}")
+        format!("paperwire serve --client {client}")
     };
     lines.push(format!(
         "\nNow add the server to your AI client. For Claude Code:\n  \
-         claude mcp add postal -- {serve}\n\n\
-         To take the permission back: postal-mcp admin revoke {}",
+         claude mcp add paperwire -- {serve}\n\n\
+         To take the permission back: paperwire admin revoke {}",
         outcome.grant.id
     ));
     lines.join("\n")

@@ -3,16 +3,16 @@
 
 use std::sync::Arc;
 
-use postal_mcp::connections::{Connection, ConnectionStatus, CredentialRef, MemoryStore};
-use postal_mcp::core::{Capability, Money, clock};
-use postal_mcp::delegation::{Constraints, Grant, Reason, Usage};
-use postal_mcp::documents::{self, DocumentFormat};
-use postal_mcp::operations::{
+use paperwire::connections::{Connection, ConnectionStatus, CredentialRef, MemoryStore};
+use paperwire::core::{Capability, Money, clock};
+use paperwire::delegation::{Constraints, Grant, Reason, Usage};
+use paperwire::documents::{self, DocumentFormat};
+use paperwire::operations::{
     Address, Operation, OperationError, OperationStatus, Operations, QuoteRequest, SendOutcome,
     resolve_by_operator,
 };
-use postal_mcp::providers::{Environment, MockBehavior, MockProvider, Registry};
-use postal_mcp::store::Store;
+use paperwire::providers::{Environment, MockBehavior, MockProvider, Registry};
+use paperwire::store::Store;
 use time::Duration;
 
 const CLIENT: &str = "assistant";

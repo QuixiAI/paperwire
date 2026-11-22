@@ -16,24 +16,24 @@ pub struct Server {
 }
 
 impl Server {
-    /// Start `postal-mcp serve --client <client>` on the database in `data_dir`.
+    /// Start `paperwire serve --client <client>` on the database in `data_dir`.
     pub fn start(data_dir: &Path, client: &str) -> Self {
         Self::start_with(data_dir, client, &[])
     }
 
     /// As [`Server::start`], with extra `serve` arguments.
     pub fn start_with(data_dir: &Path, client: &str, serve_args: &[&str]) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_postal-mcp"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_paperwire"))
             .args(["serve", "--client", client])
             .args(serve_args)
             .arg("--data-dir")
             .arg(data_dir)
-            .env("POSTAL_MCP_LOG", "warn")
+            .env("PAPERWIRE_LOG", "warn")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("spawn postal-mcp");
+            .expect("spawn paperwire");
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         Self {

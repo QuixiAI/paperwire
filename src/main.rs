@@ -6,20 +6,20 @@ use clap::{Parser, Subcommand};
 use rmcp::{ServiceExt, transport::stdio};
 use tracing_subscriber::EnvFilter;
 
-use postal_mcp::admin::cli::AdminCommand;
-use postal_mcp::admin::login::{self, LoginRequest};
-use postal_mcp::admin::{Admin, DEFAULT_CLIENT, InteractiveTerminal, cli};
-use postal_mcp::connections::KeyringStore;
-use postal_mcp::documents::DocumentDirs;
-use postal_mcp::mcp::PostalServer;
-use postal_mcp::providers::Registry;
-use postal_mcp::store::{Store, default_data_dir};
+use paperwire::admin::cli::AdminCommand;
+use paperwire::admin::login::{self, LoginRequest};
+use paperwire::admin::{Admin, DEFAULT_CLIENT, InteractiveTerminal, cli};
+use paperwire::connections::KeyringStore;
+use paperwire::documents::DocumentDirs;
+use paperwire::mcp::PaperwireServer;
+use paperwire::providers::Registry;
+use paperwire::store::{Store, default_data_dir};
 
 #[derive(Parser)]
 #[command(version, about = "Universal Correspondence MCP server")]
 struct Cli {
-    /// Where the database lives. Defaults to ~/.local/share/postal-mcp.
-    #[arg(long, global = true, env = "POSTAL_MCP_DATA_DIR", value_name = "DIR")]
+    /// Where the database lives. Defaults to ~/.local/share/paperwire.
+    #[arg(long, global = true, env = "PAPERWIRE_DATA_DIR", value_name = "DIR")]
     data_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
     // In `serve`, stdout carries MCP messages; logs go to stderr only.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_env("POSTAL_MCP_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_env("PAPERWIRE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)
@@ -105,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
             let document_dirs =
                 DocumentDirs::new(&document_dirs).context("opening a --document-dir")?;
             let secrets = Arc::new(KeyringStore);
-            let service = PostalServer::new(providers, store, secrets, document_dirs, client)
+            let service = PaperwireServer::new(providers, store, secrets, document_dirs, client)
                 .serve(stdio())
                 .await?;
             service.waiting().await?;

@@ -1,16 +1,16 @@
-# postal-mcp
+# paperwire
 
 Universal Correspondence MCP: connect your postal mail, fax, and virtual
 mailbox accounts and give AI agents exactly the authority they need to use
 them. See [`design.md`](design.md) for the specification and
 [`PLAN.md`](PLAN.md) for the implementation plan.
 
-Status: **M4.** The MCP server runs over stdio. You can connect an account,
-grant an AI client limited permissions, and the client can prepare a text
-document, get a quote and send a letter within those limits. Two providers
-are built in: a mock that mails nothing, and Lob. The Lob adapter is written
-from Lob's documentation and tested against a local stand-in; it has not yet
-been run against Lob.
+Status: **M5**, plus guided `login`. The MCP server runs over stdio. You can
+connect an account, grant an AI client limited permissions, and the client
+can prepare a text or Markdown document or a PDF, get a quote and send a
+letter within those limits. Two providers are built in: a mock that mails
+nothing, and Lob. The Lob adapter is written from Lob's documentation and
+tested against a local stand-in; it has not yet been run against Lob.
 
 ## Build and test
 
@@ -30,13 +30,13 @@ cargo run -- serve --document-dir ~/Letters   # let the client import PDFs from 
 To use it from Claude Code:
 
 ```sh
-claude mcp add postal -- /absolute/path/to/target/debug/postal-mcp serve
+claude mcp add paperwire -- /absolute/path/to/target/debug/paperwire serve
 ```
 
 ## Log in
 
 ```sh
-postal-mcp login          # or: postal-mcp login lob --client claude
+paperwire login          # or: paperwire login lob --client claude
 ```
 
 `login` asks for the provider's API key (hidden, and stored in the OS
@@ -49,9 +49,9 @@ known cost.
 
 The permission it grants is letters within the US, by default up to $3.00
 each and $30.00 a month, with no expiry. It applies to every AI client that
-runs `postal-mcp serve`. To give clients different limits, start each with
+runs `paperwire serve`. To give clients different limits, start each with
 its own `serve --client NAME` and run `login --client NAME` for each; the
-name is a label, not a check of who is connecting. `postal-mcp logout` disconnects the account and
+name is a label, not a check of who is connecting. `paperwire logout` disconnects the account and
 deletes the stored key.
 
 The AI cannot do this. `login` refuses to run without an interactive
@@ -64,22 +64,22 @@ available. `connect`, `grant`, `price` and `resolve` ask you to confirm and
 refuse to run without an interactive terminal.
 
 ```sh
-postal-mcp admin connect mock
-postal-mcp admin grant --client default --connection <connection id> \
+paperwire admin connect mock
+paperwire admin grant --client default --connection <connection id> \
     --action postal.send.letter --country US \
     --max-cost USD:300 --monthly-budget USD:3000 --expires-in 30d
-postal-mcp admin grants
-postal-mcp admin revoke <grant id>
-postal-mcp admin operations
-postal-mcp admin audit
+paperwire admin grants
+paperwire admin revoke <grant id>
+paperwire admin operations
+paperwire admin audit
 ```
 
 For Lob without `login`, connect with a test key and set your price for a
 letter:
 
 ```sh
-postal-mcp admin connect lob --env test
-postal-mcp admin price lob letter --base USD:120 --per-extra-page 20
+paperwire admin connect lob --env test
+paperwire admin price lob letter --base USD:120 --per-extra-page 20
 ```
 
 A price may have fractions of a cent: `--base USD:106.6` is $1.066. The
@@ -106,10 +106,10 @@ server's next call.
 
 If a send ends with an unknown outcome, the server never sends it again. It
 asks the provider what happened; if the provider cannot say, check with the
-provider yourself and run `postal-mcp admin resolve <operation id>
+provider yourself and run `paperwire admin resolve <operation id>
 accepted|failed`.
 
-State is kept in `~/.local/share/postal-mcp` (override with `--data-dir` or
-`POSTAL_MCP_DATA_DIR`). API keys are stored in the OS keychain, not there.
+State is kept in `~/.local/share/paperwire` (override with `--data-dir` or
+`PAPERWIRE_DATA_DIR`). API keys are stored in the OS keychain, not there.
 
-Logs go to stderr; set the level with `POSTAL_MCP_LOG` (e.g. `debug`).
+Logs go to stderr; set the level with `PAPERWIRE_LOG` (e.g. `debug`).

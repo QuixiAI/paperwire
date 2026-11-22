@@ -336,7 +336,7 @@ pub struct ReqwestTransport {
 impl ReqwestTransport {
     pub fn new() -> Result<Self, HttpError> {
         let client = reqwest::Client::builder()
-            .user_agent(concat!("postal-mcp/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("paperwire/", env!("CARGO_PKG_VERSION")))
             // A redirect on a POST would silently re-send or drop the body;
             // providers are called at their documented endpoints, so a
             // redirect surfaces as a 3xx response instead of being followed.

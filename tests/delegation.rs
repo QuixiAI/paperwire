@@ -2,19 +2,19 @@
 //! capabilities granted to it, and a revocation applies at once.
 //!
 //! State is set up through the control-plane library, as the user would
-//! with `postal-mcp admin`; the client side is the real binary over stdio.
+//! with `paperwire admin`; the client side is the real binary over stdio.
 
 mod common;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use postal_mcp::admin::{Admin, AdminError, GrantRequest, Terminal};
-use postal_mcp::connections::{Connection, MemoryStore};
-use postal_mcp::core::{Capability, Money, Secret, clock};
-use postal_mcp::delegation::{Constraints, Grant};
-use postal_mcp::providers::{Environment, Registry};
-use postal_mcp::store::Store;
+use paperwire::admin::{Admin, AdminError, GrantRequest, Terminal};
+use paperwire::connections::{Connection, MemoryStore};
+use paperwire::core::{Capability, Money, Secret, clock};
+use paperwire::delegation::{Constraints, Grant};
+use paperwire::providers::{Environment, Registry};
+use paperwire::store::Store;
 use serde_json::{Value, json};
 
 use common::Server;
@@ -256,7 +256,7 @@ async fn disconnecting_an_account_stops_its_grants() {
 }
 
 fn admin(data_dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_postal-mcp"))
+    Command::new(env!("CARGO_BIN_EXE_paperwire"))
         .arg("--data-dir")
         .arg(data_dir)
         .arg("admin")

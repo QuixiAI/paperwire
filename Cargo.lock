@@ -1702,6 +1702,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "paperwire"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "keyring",
+ "lopdf",
+ "pulldown-cmark",
+ "reqwest",
+ "rmcp",
+ "rpassword",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1754,32 +1780,6 @@ dependencies = [
  "pin-project-lite",
  "rustix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "postal-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "keyring",
- "lopdf",
- "pulldown-cmark",
- "reqwest",
- "rmcp",
- "rpassword",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "time",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "wiremock",
 ]
 
 [[package]]

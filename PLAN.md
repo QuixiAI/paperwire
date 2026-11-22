@@ -1,4 +1,4 @@
-# postal-mcp — Implementation Plan (Rust)
+# paperwire — Implementation Plan (Rust)
 
 Companion to `design.md` (v0.5). The design stays authoritative on **what** to build;
 this file covers **how**: milestones and Rust-specific decisions. Section numbers (§) point
@@ -17,7 +17,7 @@ into `design.md`.
 | YAML config (§23) | TOML (`toml` crate) | Same shape as §23 |
 | pdf-lib / PDF.js | `lopdf` (inspect/page count), later | Phase 2 |
 | LibreOffice / Chromium | Sandboxed subprocess, later | Out of MVP |
-| CLI | `clap` | `postal-mcp serve` and `postal-mcp admin …` |
+| CLI | `clap` | `paperwire serve` and `paperwire admin …` |
 | Secrets | `keyring` crate (macOS Keychain); env vars only via `--from-env` for CI | Never through MCP (§4.4) |
 | Logging | `tracing` to **stderr** | stdout belongs to MCP stdio |
 
@@ -186,7 +186,7 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
   page counts are still estimates.
 
 ### Login ✅
-- `postal-mcp login [provider] [--client NAME]` (`admin/login.rs`): hidden key
+- `paperwire login [provider] [--client NAME]` (`admin/login.rs`): hidden key
   prompt → verify with the provider → price (providers that cannot quote) →
   spending limits → one confirmation → store connection, price and
   grant. Reuses an existing connection if there is one. The environment comes
@@ -197,7 +197,7 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
   decimal places of a cent). A letter's cost is computed from them and
   rounded up to a whole cent once; limits, reservations and the ledger stay
   in whole cents (`core::Money`).
-- `postal-mcp logout [connection id]` disconnects and deletes the key.
+- `paperwire logout [connection id]` disconnects and deletes the key.
 - Fixed in `login`: US only, USD, letters, no expiry. Use `admin grant` for
   anything else.
 

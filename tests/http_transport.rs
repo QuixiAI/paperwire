@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use postal_mcp::http::{
+use paperwire::http::{
     HttpError, Method, Part, Request, ReqwestTransport, RetryPolicy, Retrying, Transport,
 };
 use serde_json::json;

@@ -7,21 +7,21 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use postal_mcp::connections::{
+use paperwire::connections::{
     Connection, ConnectionStatus, CredentialRef, MemoryStore, SecretStore,
 };
-use postal_mcp::core::{Capability, Money, Rate, Secret, clock};
-use postal_mcp::delegation::{Constraints, Grant, Reason};
-use postal_mcp::documents::{self, Document, DocumentDirs, DocumentFormat};
-use postal_mcp::http::{ReqwestTransport, RetryPolicy, Retrying};
-use postal_mcp::operations::{
+use paperwire::core::{Capability, Money, Rate, Secret, clock};
+use paperwire::delegation::{Constraints, Grant, Reason};
+use paperwire::documents::{self, Document, DocumentDirs, DocumentFormat};
+use paperwire::http::{ReqwestTransport, RetryPolicy, Retrying};
+use paperwire::operations::{
     Address, Operation, OperationError, OperationStatus, Operations, PriceKind, ProviderPrice,
     Quote, QuoteRequest, SendOutcome,
 };
-use postal_mcp::providers::{
+use paperwire::providers::{
     DeliveryStage, Environment, LobAdapter, ProviderAdapter, ProviderError, Registry,
 };
-use postal_mcp::store::Store;
+use paperwire::store::Store;
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, header_exists, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};

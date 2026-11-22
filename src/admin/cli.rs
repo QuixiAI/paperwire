@@ -208,7 +208,7 @@ pub async fn run(
             writeln!(
                 out,
                 "The AI has no permissions on it yet. Grant some with:\n  \
-                 postal-mcp admin grant --client default --connection {} --action <capability>",
+                 paperwire admin grant --client default --connection {} --action <capability>",
                 connection.id
             )?;
         }

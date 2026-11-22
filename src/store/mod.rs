@@ -53,14 +53,14 @@ pub struct AuditRecord {
 }
 
 /// Where state lives when `--data-dir` is not given:
-/// `$XDG_DATA_HOME/postal-mcp`, else `~/.local/share/postal-mcp`.
+/// `$XDG_DATA_HOME/paperwire`, else `~/.local/share/paperwire`.
 pub fn default_data_dir() -> Option<PathBuf> {
     let non_empty = |name| std::env::var_os(name).filter(|v| !v.is_empty());
     let base = match non_empty("XDG_DATA_HOME") {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(non_empty("HOME")?).join(".local/share"),
     };
-    Some(base.join("postal-mcp"))
+    Some(base.join("paperwire"))
 }
 
 const SCHEMA_V1: &str = "
@@ -191,7 +191,7 @@ pub struct Store {
 }
 
 impl Store {
-    pub const FILE_NAME: &'static str = "postal-mcp.db";
+    pub const FILE_NAME: &'static str = "paperwire.db";
 
     /// Open (creating if needed) the database in `data_dir`.
     pub fn open(data_dir: &Path) -> Result<Self, StoreError> {

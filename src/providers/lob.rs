@@ -280,7 +280,7 @@ impl<T: Transport + 'static> ProviderAdapter for LobAdapter<T> {
             let rejected = |e: ProviderError| SubmitError::Rejected(e.to_string());
             validate(item).map_err(rejected)?;
             let operation_id = authorized.operation_id();
-            let description = format!("postal-mcp {operation_id}");
+            let description = format!("paperwire {operation_id}");
             let from = item
                 .from
                 .as_ref()

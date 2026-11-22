@@ -14,13 +14,13 @@ mod common;
 
 use std::path::Path;
 
-use postal_mcp::admin::{Admin, AdminError, GrantRequest, Terminal};
-use postal_mcp::connections::MemoryStore;
-use postal_mcp::core::{Capability, Money, Rate, Secret, clock};
-use postal_mcp::delegation::Constraints;
-use postal_mcp::operations::ProviderPrice;
-use postal_mcp::providers::{Environment, Registry};
-use postal_mcp::store::Store;
+use paperwire::admin::{Admin, AdminError, GrantRequest, Terminal};
+use paperwire::connections::MemoryStore;
+use paperwire::core::{Capability, Money, Rate, Secret, clock};
+use paperwire::delegation::Constraints;
+use paperwire::operations::ProviderPrice;
+use paperwire::providers::{Environment, Registry};
+use paperwire::store::Store;
 use serde_json::{Value, json};
 
 use common::Server;
@@ -72,7 +72,7 @@ fn quote_request(connection_id: &str, document_id: &Value) -> Value {
             "country": "US"
         },
         "from": {
-            "name": "Postal MCP Test",
+            "name": "Paperwire Test",
             "line1": "185 Berry St Ste 6100",
             "city": "San Francisco",
             "state": "CA",

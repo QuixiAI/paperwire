@@ -23,7 +23,7 @@ use crate::providers::{Environment, ProviderInfo, Registry, Tracking};
 use crate::store::{Store, StoreError};
 
 #[derive(Clone)]
-pub struct PostalServer {
+pub struct PaperwireServer {
     providers: Registry,
     store: Store,
     operations: Operations,
@@ -118,7 +118,7 @@ pub struct PermissionResult {
     pub grant_id: Option<String>,
     pub policy_version: Option<u32>,
     /// Whether an approval workflow can be started from here. Not yet: the
-    /// user changes permissions with `postal-mcp admin`.
+    /// user changes permissions with `paperwire admin`.
     pub approval_available: bool,
 }
 
@@ -231,7 +231,7 @@ impl From<Operation> for OperationView {
             OperationStatus::Uncertain => {
                 "The provider may or may not have accepted this. Do not send it again: \
                  that could mail it twice. Check correspondence_status later; if it stays \
-                 uncertain, the user must resolve it with `postal-mcp admin resolve`."
+                 uncertain, the user must resolve it with `paperwire admin resolve`."
             }
         };
         Self {
@@ -272,7 +272,7 @@ fn internal(e: StoreError) -> String {
 }
 
 #[tool_router]
-impl PostalServer {
+impl PaperwireServer {
     pub fn new(
         providers: Registry,
         store: Store,
@@ -321,7 +321,7 @@ impl PostalServer {
     }
 
     #[tool(
-        description = "List the connected provider accounts this client has been granted access to. Accounts are connected by the user with `postal-mcp admin connect`, never through this server.",
+        description = "List the connected provider accounts this client has been granted access to. Accounts are connected by the user with `paperwire admin connect`, never through this server.",
         annotations(read_only_hint = true)
     )]
     async fn connections_list(&self) -> Result<Json<ConnectionsList>, String> {
@@ -352,7 +352,7 @@ impl PostalServer {
     }
 
     #[tool(
-        description = "Return the permissions the user has delegated to this client: which actions on which connections, and under what limits. Permissions are granted and revoked only by the user with `postal-mcp admin grant` / `revoke`; this server cannot change them.",
+        description = "Return the permissions the user has delegated to this client: which actions on which connections, and under what limits. Permissions are granted and revoked only by the user with `paperwire admin grant` / `revoke`; this server cannot change them.",
         annotations(read_only_hint = true)
     )]
     async fn permissions_get(&self) -> Result<Json<Permissions>, String> {
@@ -531,7 +531,7 @@ impl PostalServer {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for PostalServer {
+impl ServerHandler for PaperwireServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(

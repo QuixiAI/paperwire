@@ -5,7 +5,7 @@
 **Version:** 0.5  
 **Status:** Proposed  
 **Date:** November 9, 2026  
-**Working repository name:** `postal-mcp`  
+**Working repository name:** `paperwire`  
 **Product name:** Universal Correspondence MCP  
 **Primary language:** Rust  
 **Protocol:** Model Context Protocol (MCP)  
@@ -308,7 +308,7 @@ Where providers rely on API keys:
 
 Provider credentials must not be entered through ordinary model-visible MCP inputs or elicitation forms.
 
-In the local implementation the approved setup flow is the command line: `postal-mcp login` (or `postal-mcp admin connect <provider>`) prompts for the key on an interactive terminal and stores it in the OS credential store (§20.2).
+In the local implementation the approved setup flow is the command line: `paperwire login` (or `paperwire admin connect <provider>`) prompts for the key on an interactive terminal and stores it in the OS credential store (§20.2).
 
 ## 4.5 New account creation
 
@@ -571,7 +571,7 @@ However, the AI must not directly issue a valid grant to itself.
 
 Only the trusted administrative system can create or modify effective permissions.
 
-In the local implementation, `postal-mcp login` and the admin commands that connect accounts or create grants require confirmation on an interactive terminal and refuse to run when standard input is not a terminal. No flag skips this. It keeps an AI client with shell access from running them unattended; §20.3 states the limits of that protection.
+In the local implementation, `paperwire login` and the admin commands that connect accounts or create grants require confirmation on an interactive terminal and refuse to run when standard input is not a terminal. No flag skips this. It keeps an AI client with shell access from running them unattended; §20.3 states the limits of that protection.
 
 ## 6.3 Revocation
 
@@ -1788,7 +1788,7 @@ environment = "test"
 
 [storage]
 database = "sqlite"
-path = "~/.local/share/postal-mcp"
+path = "~/.local/share/paperwire"
 
 [documents]
 max_file_size_mb = 25
@@ -1809,7 +1809,7 @@ enabled = true
 enabled = true
 ```
 
-Credentials are not part of the configuration file. They are stored in the OS credential store by `postal-mcp admin connect` (§4.4, §20.2).
+Credentials are not part of the configuration file. They are stored in the OS credential store by `paperwire admin connect` (§4.4, §20.2).
 
 This is proposed configuration, not an existing vendor schema.
 
@@ -1950,7 +1950,7 @@ The first implementation should prioritize local operation while maintaining bou
 One Cargo crate (library plus binary). It is split into a workspace only when a boundary requires it.
 
 ```text
-postal-mcp/
+paperwire/
   README.md
   PLAN.md             # milestones and Rust-specific decisions
   design.md
@@ -2208,7 +2208,7 @@ Fax and inbound mail should follow using the same connection and delegation arch
 
 Questions to resolve during implementation:
 
-1. Should the initial repository be called `postal-mcp` or `correspondence-mcp`? **Decided:** `postal-mcp`.
+1. Should the initial repository be called `paperwire` or `correspondence-mcp`? **Decided:** `paperwire`.
 2. Which provider has the lowest-friction initial account-connection workflow? **Decided:** Lob, in its test environment, is the first provider.
 3. Should the first control plane be a local web UI or CLI? **Decided:** CLI first; a local web UI may follow.
 4. How should individual MCP clients be identified in local deployments? **Decided:** by a name set when the server is started (`serve --client NAME`). Grants are made to that name. It is configuration, not authentication (§5.2).
@@ -2324,7 +2324,7 @@ Build one real connection and one delegated real-world capability before broaden
 
 **Product:** Universal Correspondence MCP
 
-**Working repository:** `postal-mcp`
+**Working repository:** `paperwire`
 
 **Category:** Open-source, provider-agnostic MCP integration server.
 

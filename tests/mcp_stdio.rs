@@ -95,7 +95,7 @@ fn initialize_handshake_still_works_for_older_clients() {
         }),
     );
     assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
-    assert_eq!(init["result"]["serverInfo"]["name"], "postal-mcp");
+    assert_eq!(init["result"]["serverInfo"]["name"], "paperwire");
     server.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
 
     let list = server.request(2, "tools/list", json!({}));
