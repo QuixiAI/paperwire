@@ -181,9 +181,13 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
   Markdown keeps the 12-point monospaced grid, so the page estimate holds.
 - Lob: a PDF is uploaded as multipart with the other fields as form fields.
   A letter is one PDF or any number of text/Markdown documents, not a mix.
-- **Not yet:** DOCX, HTML and image input; merging several PDFs;
-  `documents_preview`; page sizes other than US Letter. Text and Markdown
-  page counts are still estimates.
+- `documents_preview` (§9.4): the documents of a letter in printing order
+  and, for text and Markdown, the exact HTML the provider is given. A PDF
+  has no HTML: it is sent as imported. It contacts no provider, so it does
+  not show a provider's own additions, such as Lob's address page.
+- **Not yet:** DOCX, HTML and image input; merging several PDFs; a rendered
+  (PDF or image) preview; page sizes other than US Letter. Text and
+  Markdown page counts are still estimates.
 
 ### Login ✅
 - `paperwire login [provider] [--client NAME]` (`admin/login.rs`): hidden key

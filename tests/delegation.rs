@@ -327,6 +327,31 @@ async fn send_a_letter_then_revoke() {
     assert_eq!(document["page_count"], 1);
     assert_eq!(document["page_count_estimated"], true);
 
+    // The preview is what the provider will be given, and is the client's
+    // own: another client cannot preview this document.
+    let preview = assistant.call_ok(
+        "documents_preview",
+        json!({"document_ids": [document["document_id"]]}),
+    );
+    assert!(
+        preview["html"]
+            .as_str()
+            .unwrap()
+            .contains("Please find my reply enclosed.")
+    );
+    assert_eq!(preview["page_count"], 1);
+    assert_eq!(
+        preview["documents"][0]["document_id"],
+        document["document_id"]
+    );
+    let mut stranger = Server::start(dir.path(), "stranger");
+    let hidden = stranger.call(
+        "documents_preview",
+        json!({"document_ids": [document["document_id"]]}),
+    );
+    assert_eq!(hidden["isError"], true);
+    drop(stranger);
+
     let quote_request = json!({
         "connection_id": connection.id,
         "product": "letter",
@@ -446,6 +471,22 @@ async fn pdfs_are_read_only_from_allowed_directories() {
     assert_eq!(document["format"], "pdf");
     assert_eq!(document["page_count"], 2);
     assert_eq!(document["page_count_estimated"], false);
+
+    // A PDF is previewed as it is: there is no HTML to show, and it cannot
+    // be combined with text.
+    let preview = assistant.call_ok(
+        "documents_preview",
+        json!({"document_ids": [document["document_id"]]}),
+    );
+    assert_eq!(preview["html"], Value::Null);
+    assert_eq!(preview["page_count"], 2);
+    assert_eq!(preview["page_count_estimated"], false);
+    let cover = assistant.call_ok("documents_prepare", json!({"content": "Enclosed."}));
+    let mixed = assistant.call(
+        "documents_preview",
+        json!({"document_ids": [cover["document_id"], document["document_id"]]}),
+    );
+    assert_eq!(mixed["isError"], true);
 
     let refused = assistant.call("documents_prepare", json!({"path": outside}));
     assert_eq!(refused["isError"], true);
