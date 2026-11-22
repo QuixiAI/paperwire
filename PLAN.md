@@ -185,10 +185,35 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
   `documents_preview`; page sizes other than US Letter. Text and Markdown
   page counts are still estimates.
 
+### Login ✅
+- `postal-mcp login [provider] [--client NAME]` (`admin/login.rs`): hidden key
+  prompt → verify with the provider → price (providers that cannot quote) →
+  spending limits → one confirmation → store connection, price and
+  grant. Reuses an existing connection if there is one. The environment comes
+  from the key's prefix where the provider has one (Lob).
+- It does not ask for a client: the name is unverifiable in local mode, so
+  the grant goes to `default` (what `serve` uses) unless `--client` is given.
+- Prices are exact decimals (`core::Rate`, any number of digits up to 12
+  decimal places of a cent). A letter's cost is computed from them and
+  rounded up to a whole cent once; limits, reservations and the ledger stay
+  in whole cents (`core::Money`).
+- `postal-mcp logout [connection id]` disconnects and deletes the key.
+- Fixed in `login`: US only, USD, letters, no expiry. Use `admin grant` for
+  anything else.
+
 ### M6: MVP demo (§29) as an integration test
 - Connect → grant "domestic letters < $3" → send → status → revoke → send denied.
-- Already passing on the mock provider (`send_a_letter_then_revoke` in
-  `tests/delegation.rs`). What remains is the same test against Lob.
+- Passing on the mock provider (`send_a_letter_then_revoke` in
+  `tests/delegation.rs`).
+- Written for Lob's test environment but **not yet run**: `tests/lob_live.rs`,
+  ignored by default because it reaches api.lob.com. It connects with the key
+  from the environment, sends a Markdown letter and a two-page PDF through the
+  real binary, reads Lob's delivery report, revokes, and sees the next send
+  denied. It refuses any key that does not start with `test_`.
+  ```sh
+  LOB_TEST_API_KEY=test_... cargo test --test lob_live -- --ignored
+  ```
+  Its first run is also the check of the M4 "to confirm" list.
 
 After the MVP: Phaxio fax (multipart), Stable inbound mailbox, local web control plane
 (axum), streamable HTTP + OAuth for hosted mode (§7.2).

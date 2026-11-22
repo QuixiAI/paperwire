@@ -7,7 +7,7 @@ mod secret;
 
 pub use capability::{Capability, UnknownCapability};
 pub use clock::Timestamp;
-pub use money::Money;
+pub use money::{Money, Rate};
 pub use secret::Secret;
 
 /// A new random identifier such as `op_3f9a1c0b7d2e`. Identifiers are

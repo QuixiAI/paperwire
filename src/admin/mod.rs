@@ -6,13 +6,14 @@
 //! terminal; revoking and disconnecting only narrow it and do not.
 
 pub mod cli;
+pub mod login;
 
 use std::io::{BufRead, IsTerminal, Write};
 
 use crate::connections::{
     Connection, ConnectionStatus, CredentialRef, SecretError, SecretStore, resolve,
 };
-use crate::core::{Capability, Secret, Timestamp, clock, new_id};
+use crate::core::{Capability, Money, Rate, Secret, Timestamp, clock, new_id};
 use crate::delegation::{Constraints, Grant};
 use crate::operations::{self, Operation, OperationStatus, ProviderPrice};
 use crate::providers::{AuthMethod, Environment, ProviderError, Registry};
@@ -39,6 +40,9 @@ pub enum AdminError {
     Io(#[from] std::io::Error),
 }
 
+/// The client name a server has unless started with `serve --client`.
+pub const DEFAULT_CLIENT: &str = "default";
+
 /// The user's side of the control plane.
 pub trait Terminal {
     /// Show `summary` and ask for confirmation. Fails with
@@ -47,6 +51,14 @@ pub trait Terminal {
 
     /// Read a credential without echoing it.
     fn read_secret(&mut self, prompt: &str) -> Result<Secret, AdminError>;
+
+    /// Ask a question and return the trimmed answer, or `default` if the
+    /// answer is empty. Fails like [`Terminal::confirm`] when no person can
+    /// be asked.
+    fn ask(&mut self, question: &str, default: Option<&str>) -> Result<String, AdminError>;
+
+    /// Tell the user something, without asking anything.
+    fn note(&mut self, message: &str) -> Result<(), AdminError>;
 }
 
 /// The real terminal. It refuses unless stdin and stderr are both
@@ -77,6 +89,32 @@ impl Terminal for InteractiveTerminal {
     fn read_secret(&mut self, prompt: &str) -> Result<Secret, AdminError> {
         Self::require_tty()?;
         Ok(Secret::new(rpassword::prompt_password(prompt)?))
+    }
+
+    fn ask(&mut self, question: &str, default: Option<&str>) -> Result<String, AdminError> {
+        Self::require_tty()?;
+        let mut err = std::io::stderr().lock();
+        match default {
+            Some(default) => write!(err, "{question} [{default}]: ")?,
+            None => write!(err, "{question}: ")?,
+        }
+        err.flush()?;
+        let mut answer = String::new();
+        if std::io::stdin().lock().read_line(&mut answer)? == 0 {
+            // End of input: nobody is answering.
+            return Err(AdminError::Declined);
+        }
+        let answer = answer.trim();
+        Ok(if answer.is_empty() {
+            default.unwrap_or_default().to_owned()
+        } else {
+            answer.to_owned()
+        })
+    }
+
+    fn note(&mut self, message: &str) -> Result<(), AdminError> {
+        writeln!(std::io::stderr().lock(), "{message}")?;
+        Ok(())
     }
 }
 
@@ -176,10 +214,22 @@ impl Admin<'_> {
             credential,
             created_at: clock::now(),
         };
-        if let (CredentialRef::Keyring, Some(secret)) = (&connection.credential, &secret) {
+        self.store_connection(&connection, secret.as_ref())?;
+        Ok(connection)
+    }
+
+    /// Store a verified connection and, for a keychain connection, its
+    /// credential. The caller has already had the user confirm.
+    fn store_connection(
+        &self,
+        connection: &Connection,
+        secret: Option<&Secret>,
+    ) -> Result<(), AdminError> {
+        let environment = connection.environment;
+        if let (CredentialRef::Keyring, Some(secret)) = (&connection.credential, secret) {
             self.secrets.set(&connection.id, secret)?;
         }
-        if let Err(e) = self.store.insert_connection(&connection) {
+        if let Err(e) = self.store.insert_connection(connection) {
             // Do not leave an orphaned credential behind.
             let _ = self.secrets.delete(&connection.id);
             return Err(e.into());
@@ -197,7 +247,7 @@ impl Admin<'_> {
             },
             connection.created_at,
         )?;
-        Ok(connection)
+        Ok(())
     }
 
     /// Disconnect an account (design.md §4.7). New operations stop at once,
@@ -227,6 +277,22 @@ impl Admin<'_> {
     /// Create a delegation grant (design.md §6.2) after the user confirms
     /// exactly what it allows.
     pub fn grant(&mut self, request: GrantRequest) -> Result<Grant, AdminError> {
+        let grant = self.build_grant(request, None)?;
+        self.confirm(&format!(
+            "Grant these permissions to an AI client:\n\n{}",
+            describe_grant(&grant)
+        ))?;
+        self.store_grant(&grant)?;
+        Ok(grant)
+    }
+
+    /// Validate a request and give it an id, storing nothing. `pending` is
+    /// a verified connection that is about to be stored with the grant.
+    fn build_grant(
+        &self,
+        request: GrantRequest,
+        pending: Option<&Connection>,
+    ) -> Result<Grant, AdminError> {
         let now = clock::now();
         let invalid = |message: String| Err(AdminError::Invalid(message));
         if request.principal_id.trim().is_empty() {
@@ -253,8 +319,12 @@ impl Admin<'_> {
             }
         }
         for id in &request.connection_ids {
-            let Some(connection) = self.store.connection(id)? else {
-                return invalid(format!("no connection {id:?}"));
+            let connection = match pending.filter(|c| &c.id == id) {
+                Some(pending) => pending.clone(),
+                None => match self.store.connection(id)? {
+                    Some(stored) => stored,
+                    None => return invalid(format!("no connection {id:?}")),
+                },
             };
             if !connection.is_ready() {
                 return invalid(format!("connection {id} is not connected"));
@@ -269,7 +339,7 @@ impl Admin<'_> {
             }
         }
 
-        let grant = Grant {
+        Ok(Grant {
             id: new_id("grant"),
             principal_id: request.principal_id.trim().to_owned(),
             connection_ids: request.connection_ids,
@@ -279,25 +349,24 @@ impl Admin<'_> {
             created_at: now,
             expires_at: request.expires_at,
             revoked_at: None,
-        };
-        self.confirm(&format!(
-            "Grant these permissions to an AI client:\n\n{}",
-            describe_grant(&grant)
-        ))?;
+        })
+    }
 
-        self.store.insert_grant(&grant)?;
+    /// Store a grant the user has confirmed.
+    fn store_grant(&self, grant: &Grant) -> Result<(), AdminError> {
+        self.store.insert_grant(grant)?;
         self.store.audit(
             &AuditEvent {
                 kind: "grant.created".into(),
                 principal_id: Some(grant.principal_id.clone()),
                 grant_id: Some(grant.id.clone()),
                 policy_version: Some(grant.policy_version),
-                detail: Some(describe_grant(&grant)),
+                detail: Some(describe_grant(grant)),
                 ..AuditEvent::default()
             },
-            now,
+            grant.created_at,
         )?;
-        Ok(grant)
+        Ok(())
     }
 
     /// Revoke a grant (design.md §6.3). Takes effect on the next evaluation.
@@ -368,39 +437,29 @@ impl Admin<'_> {
     /// low lets the AI spend more than its limits intend: confirmed like a
     /// grant.
     pub fn set_price(&mut self, price: ProviderPrice) -> Result<(), AdminError> {
+        self.check_price(&price)?;
+        self.confirm(&describe_price(&price))?;
+        self.store_price(&price)
+    }
+
+    fn check_price(&self, price: &ProviderPrice) -> Result<(), AdminError> {
         if self.providers.get(&price.provider).is_none() {
             return Err(AdminError::Invalid(format!(
                 "unknown provider {:?}",
                 price.provider
             )));
         }
-        if price.base.amount_minor < 0 || price.per_extra_page_minor < 0 {
-            return Err(AdminError::Invalid("prices must not be negative".into()));
-        }
-        self.confirm(&format!(
-            "Set the price of a {} {} to {} {} for the first page plus {} for each \
-             further page (in minor units, e.g. cents).\n\
-             Spending limits are checked against this price. If the provider charges \
-             more, the AI can spend more than its limits allow.",
-            price.provider,
-            price.product,
-            price.base.amount_minor,
-            price.base.currency,
-            price.per_extra_page_minor,
-        ))?;
+        Ok(())
+    }
+
+    /// Store a price the user has confirmed.
+    fn store_price(&self, price: &ProviderPrice) -> Result<(), AdminError> {
         let now = clock::now();
-        self.store.set_price(&price, now)?;
+        self.store.set_price(price, now)?;
         self.store.audit(
             &AuditEvent {
                 kind: "price.set".into(),
-                detail: Some(format!(
-                    "{} {}: {} {} + {} per extra page",
-                    price.provider,
-                    price.product,
-                    price.base.amount_minor,
-                    price.base.currency,
-                    price.per_extra_page_minor
-                )),
+                detail: Some(price_line(price)),
                 ..AuditEvent::default()
             },
             now,
@@ -437,12 +496,68 @@ fn join<T: ToString>(items: &[T]) -> String {
         .join(", ")
 }
 
+/// What setting a price means: what the user confirms.
+pub fn describe_price(price: &ProviderPrice) -> String {
+    format!(
+        "Set the price of a {} {} to {} for the first page plus {} for each \
+         further page.\n\
+         Spending limits are checked against this price. If the provider charges \
+         more, the AI can spend more than its limits allow.",
+        price.provider,
+        price.product,
+        display_rate(&price.currency, &price.base),
+        display_rate(&price.currency, &price.per_extra_page),
+    )
+}
+
+/// A price on one line, for listings and the audit log.
+pub fn price_line(price: &ProviderPrice) -> String {
+    format!(
+        "{} {}: {} + {} per further page",
+        price.provider,
+        price.product,
+        display_rate(&price.currency, &price.base),
+        display_rate(&price.currency, &price.per_extra_page),
+    )
+}
+
+/// A unit price for a person to read, with every digit: "$1.066".
+pub fn display_rate(currency: &str, rate: &Rate) -> String {
+    if currency == "USD" {
+        format!("${}", rate.format_major())
+    } else {
+        format!("{} {currency} (in minor units)", rate.format_minor())
+    }
+}
+
+/// Money for a person to read: "$3.00" for US dollars. Other currencies
+/// are shown in minor units, because their decimal places are not known
+/// here.
+pub fn display_money(money: &Money) -> String {
+    if money.currency == "USD" && money.amount_minor >= 0 {
+        format!(
+            "${}.{:02}",
+            money.amount_minor / 100,
+            money.amount_minor % 100
+        )
+    } else {
+        format!("{} {} (in minor units)", money.amount_minor, money.currency)
+    }
+}
+
 /// Every term of a grant, one per line: what the user confirms and what the
 /// audit log keeps.
 pub fn describe_grant(grant: &Grant) -> String {
     let c = &grant.constraints;
     let mut lines = vec![
-        format!("  client:       {}", grant.principal_id),
+        format!(
+            "  client:       {}",
+            if grant.principal_id == DEFAULT_CLIENT {
+                "any AI client using this server (no --client name)"
+            } else {
+                &grant.principal_id
+            }
+        ),
         format!("  connections:  {}", join(&grant.connection_ids)),
         format!("  actions:      {}", join(&grant.actions)),
     ];
@@ -452,12 +567,7 @@ pub fn describe_grant(grant: &Grant) -> String {
             value.unwrap_or_else(|| "no limit".into())
         ));
     };
-    let money = |m: &crate::core::Money| {
-        format!(
-            "{} {} (in minor units, e.g. cents)",
-            m.amount_minor, m.currency
-        )
-    };
+    let money = display_money;
     limit("countries:", c.destination_countries.as_deref().map(join));
     limit("max pages:", c.max_pages_per_item.map(|n| n.to_string()));
     limit("max cost:", c.max_cost_per_item.as_ref().map(money));
@@ -487,7 +597,6 @@ mod tests {
 
     use super::*;
     use crate::connections::MemoryStore;
-    use crate::core::Money;
     use crate::delegation::AuthorizedOperation;
     use crate::documents::Document;
     use crate::operations::{MailItem, Price};
@@ -502,7 +611,10 @@ mod tests {
         interactive: bool,
         answer: bool,
         secret: Option<&'static str>,
+        /// Answers to `ask`, in order. An empty answer takes the default.
+        answers: std::collections::VecDeque<&'static str>,
         shown: Vec<String>,
+        asked: Vec<String>,
     }
 
     impl Scripted {
@@ -526,6 +638,23 @@ mod tests {
 
         fn read_secret(&mut self, _: &str) -> Result<Secret, AdminError> {
             Ok(Secret::new(self.secret.expect("unexpected secret prompt")))
+        }
+
+        fn ask(&mut self, question: &str, default: Option<&str>) -> Result<String, AdminError> {
+            if !self.interactive {
+                return Err(AdminError::NotInteractive);
+            }
+            self.asked.push(question.to_owned());
+            let answer = self.answers.pop_front().expect("unexpected question");
+            Ok(if answer.is_empty() {
+                default.unwrap_or_default().to_owned()
+            } else {
+                answer.to_owned()
+            })
+        }
+
+        fn note(&mut self, _: &str) -> Result<(), AdminError> {
+            Ok(())
         }
     }
 
@@ -556,6 +685,10 @@ mod tests {
                     None => Err(ProviderError::CredentialRequired),
                 }
             })
+        }
+
+        fn needs_user_price(&self) -> bool {
+            true
         }
 
         fn quote<'a>(&'a self, _: &'a MailItem) -> BoxFuture<'a, Result<Price, ProviderError>> {
@@ -763,7 +896,7 @@ mod tests {
         let grant = fx.admin(&mut terminal).grant(request(&connection)).unwrap();
 
         let shown = terminal.shown.last().unwrap();
-        for term in ["assistant", &connection.id, "postal.send.letter", "300 USD"] {
+        for term in ["assistant", &connection.id, "postal.send.letter", "$3.00"] {
             assert!(shown.contains(term), "{term} missing from:\n{shown}");
         }
         assert!(shown.contains("unattended"));
@@ -857,5 +990,138 @@ mod tests {
         assert!(fx.admin(&mut absent).revoke(&grant.id).is_err());
         assert!(fx.admin(&mut absent).revoke("grant_nope").is_err());
         assert_eq!(fx.kinds().last().unwrap(), "grant.revoked");
+    }
+    // --- login ---
+
+    fn login_terminal(answers: &[&'static str]) -> Scripted {
+        Scripted {
+            secret: Some("good_key"),
+            answers: answers.iter().copied().collect(),
+            ..Scripted::yes()
+        }
+    }
+
+    #[tokio::test]
+    async fn login_connects_and_grants_after_one_confirmation() {
+        let fx = Fixture::new();
+        // A price, then the defaults for further pages and both limits.
+        let mut terminal = login_terminal(&["$1.066", "", "", ""]);
+        let outcome = fx
+            .admin(&mut terminal)
+            .login(login::LoginRequest {
+                provider: Some("keyed".into()),
+                client: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(terminal.shown.len(), 1, "exactly one confirmation");
+        let summary = &terminal.shown[0];
+        assert!(summary.contains("Connect a Keyed account (test environment)"));
+        assert!(summary.contains("client:       any AI client"), "{summary}");
+        assert!(summary.contains("$3.00"), "{summary}");
+        assert!(!summary.contains("good_key"));
+
+        assert!(outcome.connected_now);
+        assert_eq!(
+            fx.store.connections().unwrap(),
+            std::slice::from_ref(&outcome.connection)
+        );
+        let stored = fx.secrets.get(&outcome.connection.id).unwrap().unwrap();
+        assert_eq!(stored.expose(), "good_key");
+        let grant = &fx.store.grants(None).unwrap()[0];
+        assert_eq!(grant, &outcome.grant);
+        assert_eq!(grant.principal_id, "default");
+        assert_eq!(grant.actions, [Capability::PostalSendLetter]);
+        assert_eq!(
+            grant.constraints,
+            Constraints {
+                destination_countries: Some(vec!["US".into()]),
+                max_cost_per_item: Some(Money::new("USD", 300)),
+                monthly_budget: Some(Money::new("USD", 3000)),
+                ..Constraints::default()
+            }
+        );
+        let price = fx.store.price("keyed", "letter").unwrap().unwrap();
+        // Every digit of the price is kept.
+        assert_eq!(price.currency, "USD");
+        assert_eq!(price.base, Rate::parse_major("1.066").unwrap());
+        assert_eq!(price.per_extra_page, Rate::ZERO);
+        assert_eq!(price.for_pages(1), Some(Money::new("USD", 107)));
+        assert!(summary.contains("Set the price of a keyed letter to $1.066 for"));
+        assert!(!outcome.price_missing);
+        assert_eq!(
+            fx.kinds(),
+            ["connection.created", "price.set", "grant.created"]
+        );
+        let text = login::describe_outcome(&outcome);
+        assert!(text.contains("postal-mcp serve\n"), "{text}");
+        assert!(!text.contains("--client"), "{text}");
+        assert!(terminal.asked.iter().all(|q| !q.contains("client name")));
+    }
+
+    #[tokio::test]
+    async fn login_stores_nothing_when_declined_or_unattended() {
+        let fx = Fixture::new();
+        let request = || login::LoginRequest {
+            provider: Some("keyed".into()),
+            client: Some("assistant".into()),
+        };
+
+        let mut declines = Scripted {
+            answer: false,
+            ..login_terminal(&["", "", ""])
+        };
+        let err = fx.admin(&mut declines).login(request()).await.unwrap_err();
+        assert!(matches!(err, AdminError::Declined));
+
+        let mut unattended = Scripted {
+            secret: Some("good_key"),
+            ..Scripted::default()
+        };
+        let err = fx
+            .admin(&mut unattended)
+            .login(request())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AdminError::NotInteractive));
+
+        let mut bad_key = Scripted {
+            secret: Some("bad_key"),
+            ..login_terminal(&[""])
+        };
+        let err = fx.admin(&mut bad_key).login(request()).await.unwrap_err();
+        assert!(matches!(
+            err,
+            AdminError::Provider(ProviderError::Unauthorized)
+        ));
+
+        assert!(fx.store.connections().unwrap().is_empty());
+        assert!(fx.store.grants(None).unwrap().is_empty());
+        assert!(fx.kinds().is_empty());
+    }
+
+    #[tokio::test]
+    async fn login_reuses_a_connection_and_takes_entered_limits() {
+        let fx = Fixture::new();
+        let connection = fx.mock_connection().await;
+        // Use the existing connection; a mistyped limit is asked again.
+        let mut terminal = login_terminal(&["yes", "lots", "1.50", "10"]);
+        let outcome = fx
+            .admin(&mut terminal)
+            .login(login::LoginRequest {
+                provider: Some("mock".into()),
+                client: Some("assistant".into()),
+            })
+            .await
+            .unwrap();
+        assert!(!outcome.connected_now);
+        assert_eq!(outcome.connection, connection);
+        assert_eq!(fx.store.connections().unwrap().len(), 1);
+        assert!(terminal.shown[0].contains("Use the existing connection"));
+        let c = &outcome.grant.constraints;
+        assert_eq!(c.max_cost_per_item, Some(Money::new("USD", 150)));
+        assert_eq!(c.monthly_budget, Some(Money::new("USD", 1000)));
+        assert!(!outcome.price_missing);
     }
 }

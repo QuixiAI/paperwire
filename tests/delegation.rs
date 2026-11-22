@@ -30,6 +30,14 @@ impl Terminal for Confirms {
     fn read_secret(&mut self, _: &str) -> Result<Secret, AdminError> {
         unreachable!("the mock provider takes no credential")
     }
+
+    fn ask(&mut self, _: &str, _: Option<&str>) -> Result<String, AdminError> {
+        unreachable!("nothing here asks questions")
+    }
+
+    fn note(&mut self, _: &str) -> Result<(), AdminError> {
+        Ok(())
+    }
 }
 
 struct ControlPlane {

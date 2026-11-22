@@ -7,7 +7,8 @@ use rmcp::{ServiceExt, transport::stdio};
 use tracing_subscriber::EnvFilter;
 
 use postal_mcp::admin::cli::AdminCommand;
-use postal_mcp::admin::{Admin, InteractiveTerminal, cli};
+use postal_mcp::admin::login::{self, LoginRequest};
+use postal_mcp::admin::{Admin, DEFAULT_CLIENT, InteractiveTerminal, cli};
 use postal_mcp::connections::KeyringStore;
 use postal_mcp::documents::DocumentDirs;
 use postal_mcp::mcp::PostalServer;
@@ -37,6 +38,21 @@ enum Command {
         #[arg(long = "document-dir", value_name = "DIR")]
         document_dirs: Vec<PathBuf>,
     },
+    /// Connect a provider account and let an AI client use it, in one
+    /// guided step. Asks its questions on the terminal.
+    Login {
+        /// Provider id, e.g. "lob". Asked for when omitted.
+        provider: Option<String>,
+        /// Grant to this `serve --client` name only, to keep AI clients
+        /// apart. Not needed with a single client.
+        #[arg(long)]
+        client: Option<String>,
+    },
+    /// Disconnect a provider account and delete its stored credential.
+    Logout {
+        /// Needed only when more than one account is connected.
+        connection_id: Option<String>,
+    },
     /// Manage connections and permissions. Not available to the AI.
     Admin {
         #[command(subcommand)]
@@ -44,7 +60,18 @@ enum Command {
     },
 }
 
-const DEFAULT_CLIENT: &str = "default";
+fn admin<'a>(
+    store: &'a Store,
+    providers: &'a Registry,
+    terminal: &'a mut InteractiveTerminal,
+) -> Admin<'a> {
+    Admin {
+        store,
+        providers,
+        secrets: &KeyringStore,
+        terminal,
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -83,13 +110,38 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             service.waiting().await?;
         }
-        Command::Admin { command } => {
-            let mut admin = Admin {
-                store: &store,
-                providers: &providers,
-                secrets: &KeyringStore,
-                terminal: &mut InteractiveTerminal,
+        Command::Login { provider, client } => {
+            let outcome = admin(&store, &providers, &mut InteractiveTerminal)
+                .login(LoginRequest { provider, client })
+                .await?;
+            println!("{}", login::describe_outcome(&outcome));
+        }
+        Command::Logout { connection_id } => {
+            let mut terminal = InteractiveTerminal;
+            let mut admin = admin(&store, &providers, &mut terminal);
+            let connected: Vec<_> = admin
+                .connections()?
+                .into_iter()
+                .filter(|c| c.is_ready())
+                .collect();
+            let id = match (connection_id, connected.as_slice()) {
+                (Some(id), _) => id,
+                (None, [only]) => only.id.clone(),
+                (None, []) => anyhow::bail!("no account is connected"),
+                (None, several) => {
+                    let ids: Vec<&str> = several.iter().map(|c| c.id.as_str()).collect();
+                    anyhow::bail!(
+                        "several accounts are connected; name one: {}",
+                        ids.join(", ")
+                    )
+                }
             };
+            admin.disconnect(&id)?;
+            println!("Disconnected: {id}");
+        }
+        Command::Admin { command } => {
+            let mut terminal = InteractiveTerminal;
+            let mut admin = admin(&store, &providers, &mut terminal);
             cli::run(*command, &mut admin, &mut std::io::stdout()).await?;
         }
     }

@@ -237,6 +237,21 @@ impl<T: Transport + 'static> ProviderAdapter for LobAdapter<T> {
         })
     }
 
+    fn credential_environment(&self, credential: &Secret) -> Option<Environment> {
+        let key = credential.expose();
+        if key.starts_with("test_") {
+            Some(Environment::Test)
+        } else if key.starts_with("live_") {
+            Some(Environment::Live)
+        } else {
+            None
+        }
+    }
+
+    fn needs_user_price(&self) -> bool {
+        true
+    }
+
     fn quote<'a>(&'a self, item: &'a MailItem) -> BoxFuture<'a, Result<Price, ProviderError>> {
         Box::pin(async move {
             validate(item)?;
@@ -429,6 +444,16 @@ mod tests {
         assert!(check_key_environment(&test, Environment::Live).is_err());
         let error = check_key_environment(&live, Environment::Test).unwrap_err();
         assert!(!error.to_string().contains("live_abc"));
+    }
+
+    #[test]
+    fn key_prefix_tells_the_environment() {
+        let lob = LobAdapter::new(crate::http::ReqwestTransport::new().unwrap());
+        let environment = |key: &str| lob.credential_environment(&Secret::new(key));
+        assert_eq!(environment("test_abc"), Some(Environment::Test));
+        assert_eq!(environment("live_abc"), Some(Environment::Live));
+        assert_eq!(environment("abc"), None);
+        assert!(lob.needs_user_price());
     }
 
     #[test]

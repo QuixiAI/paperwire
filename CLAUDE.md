@@ -5,6 +5,7 @@ spec; `PLAN.md` tracks milestones and Rust-specific decisions.
 
 ## Commands
 - `cargo test` — unit tests, wiremock HTTP tests, and MCP-over-stdio tests against the real binary
+- `LOB_TEST_API_KEY=test_... cargo test --test lob_live -- --ignored` — the MVP demo against Lob's test environment (reaches api.lob.com)
 - `cargo clippy --all-targets` and `cargo fmt` before finishing a change
 
 ## Conventions
@@ -28,8 +29,11 @@ spec; `PLAN.md` tracks milestones and Rust-specific decisions.
 - Paid or consequential POSTs carry an `idempotency_key` (design.md §19.1), with
   the provider's documented header name. Set one only if the provider
   deduplicates by it: it is what permits a retry.
-- `admin` commands that connect accounts or grant permissions must confirm on an
-  interactive TTY and refuse otherwise. Never add a flag that skips this.
-- Money is integer minor units (`core::Money`), never floats.
+- `login` and the `admin` commands that connect accounts, grant permissions or
+  set prices must confirm on an interactive TTY and refuse otherwise. Never add
+  a flag that skips this. `login` stores nothing before its one confirmation.
+- Money is integer minor units (`core::Money`), never floats. Unit prices the
+  user enters are exact decimals (`core::Rate`); they become `Money` only by
+  rounding a whole item's cost up.
 - Credentials never pass through MCP tool inputs or appear in logs/Debug output.
 - Default deny: connecting an account grants the AI nothing (design.md §5.6).

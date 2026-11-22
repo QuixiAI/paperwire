@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::connections::{Connection, ConnectionStatus, CredentialRef};
-use crate::core::{Capability, Money, Timestamp, clock};
+use crate::core::{Capability, Money, Rate, Timestamp, clock};
 use crate::delegation::{Grant, Usage};
 use crate::documents::{Document, DocumentFormat};
 use crate::operations::{Operation, OperationStatus, Price, ProviderPrice, Quote};
@@ -173,8 +173,15 @@ CREATE TABLE provider_prices (
 );
 ";
 
+/// Prices may have fractions of a minor unit: each stored amount is a
+/// mantissa, and its scale says how many decimal places it has.
+const SCHEMA_V4: &str = "
+ALTER TABLE provider_prices ADD COLUMN base_scale INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE provider_prices ADD COLUMN per_extra_page_scale INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Applied in order; `user_version` counts how many have run.
-const MIGRATIONS: [&str; 3] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3];
+const MIGRATIONS: [&str; 4] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
 
 /// Calls are short, synchronous and serialized by a mutex. That is enough
 /// for a local server with one client.
@@ -676,14 +683,17 @@ impl Tx<'_> {
     pub fn set_price(&self, price: &ProviderPrice, at: Timestamp) -> Result<(), StoreError> {
         self.db.execute(
             "INSERT OR REPLACE INTO provider_prices
-             (provider, product, currency, base_minor, per_extra_page_minor, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (provider, product, currency, base_minor, base_scale,
+              per_extra_page_minor, per_extra_page_scale, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 price.provider,
                 price.product,
-                price.base.currency,
-                price.base.amount_minor,
-                price.per_extra_page_minor,
+                price.currency,
+                price.base.mantissa(),
+                price.base.scale(),
+                price.per_extra_page.mantissa(),
+                price.per_extra_page.scale(),
                 at.unix_timestamp(),
             ],
         )?;
@@ -760,15 +770,23 @@ const OPERATION_SELECT: &str = "SELECT id, quote_id, principal_id, connection_id
      policy_version, action, status, provider_reference, error, created_at, updated_at \
      FROM operations";
 
-const PRICE_SELECT: &str = "SELECT provider, product, currency, base_minor, \
-     per_extra_page_minor FROM provider_prices";
+const PRICE_SELECT: &str = "SELECT provider, product, currency, base_minor, base_scale, \
+     per_extra_page_minor, per_extra_page_scale FROM provider_prices";
+
+/// The rate whose mantissa is in column `index` and scale in the next.
+fn rate(r: &Row<'_>, index: usize) -> rusqlite::Result<Rate> {
+    let mantissa: i64 = r.get(index)?;
+    let scale: u8 = r.get(index + 1)?;
+    Rate::new(mantissa, scale).ok_or(rusqlite::Error::IntegralValueOutOfRange(index, mantissa))
+}
 
 fn price_row(r: &Row<'_>) -> rusqlite::Result<ProviderPrice> {
     Ok(ProviderPrice {
         provider: r.get(0)?,
         product: r.get(1)?,
-        base: Money::new(r.get::<_, String>(2)?, r.get(3)?),
-        per_extra_page_minor: r.get(4)?,
+        currency: r.get(2)?,
+        base: rate(r, 3)?,
+        per_extra_page: rate(r, 5)?,
     })
 }
 
@@ -1102,5 +1120,37 @@ mod tests {
             Store::open(dir.path()),
             Err(StoreError::TooNew(99))
         ));
+    }
+
+    #[test]
+    fn prices_keep_fractions_and_survive_the_upgrade_from_whole_cents() {
+        let dir = tempfile::tempdir().unwrap();
+        // A database from before prices could have fractions of a cent.
+        {
+            let db = rusqlite::Connection::open(dir.path().join(Store::FILE_NAME)).unwrap();
+            for migration in &MIGRATIONS[..3] {
+                db.execute_batch(migration).unwrap();
+            }
+            db.execute(
+                "INSERT INTO provider_prices VALUES ('lob', 'letter', 'USD', 107, 20, 0)",
+                [],
+            )
+            .unwrap();
+            db.pragma_update(None, "user_version", 3).unwrap();
+        }
+        let store = Store::open(dir.path()).unwrap();
+        let old = store.price("lob", "letter").unwrap().unwrap();
+        assert_eq!(old.base, Rate::from_minor(107));
+        assert_eq!(old.per_extra_page, Rate::from_minor(20));
+
+        let exact = ProviderPrice {
+            provider: "lob".into(),
+            product: "letter".into(),
+            currency: "USD".into(),
+            base: Rate::parse_major("1.066").unwrap(),
+            per_extra_page: Rate::parse_major("0.0125").unwrap(),
+        };
+        store.set_price(&exact, clock::now()).unwrap();
+        assert_eq!(store.prices().unwrap(), [exact]);
     }
 }

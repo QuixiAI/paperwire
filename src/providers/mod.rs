@@ -152,6 +152,18 @@ pub trait ProviderAdapter: Send + Sync {
         credential: Option<&'a Secret>,
     ) -> BoxFuture<'a, Result<Vec<Capability>, ProviderError>>;
 
+    /// The environment a credential belongs to, when its form says so
+    /// (Lob keys start with `test_` or `live_`).
+    fn credential_environment(&self, _credential: &Secret) -> Option<Environment> {
+        None
+    }
+
+    /// Whether this provider can never price an item itself, so that the
+    /// user must set a price before anything can be sent within a cost limit.
+    fn needs_user_price(&self) -> bool {
+        false
+    }
+
     /// The price of `item`. Never invented: a provider that cannot price
     /// returns [`crate::operations::PriceKind::Unavailable`] (§13.4).
     fn quote<'a>(&'a self, item: &'a MailItem) -> BoxFuture<'a, Result<Price, ProviderError>>;

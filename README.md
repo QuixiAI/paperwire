@@ -33,10 +33,35 @@ To use it from Claude Code:
 claude mcp add postal -- /absolute/path/to/target/debug/postal-mcp serve
 ```
 
-## Connect an account and grant permissions
+## Log in
 
-The AI cannot do this. Run these yourself in a terminal: `connect` and
-`grant` ask you to confirm and refuse to run without an interactive terminal.
+```sh
+postal-mcp login          # or: postal-mcp login lob --client claude
+```
+
+`login` asks for the provider's API key (hidden, and stored in the OS
+credential store), checks it with the provider, and asks how much the AI
+may spend. It then shows everything it is about to
+store and asks you to confirm once. A Lob key says whether it is a test or
+live key, so there is no environment to choose. For Lob it also asks what a
+letter costs you, because Lob cannot quote and nothing is sent without a
+known cost.
+
+The permission it grants is letters within the US, by default up to $3.00
+each and $30.00 a month, with no expiry. It applies to every AI client that
+runs `postal-mcp serve`. To give clients different limits, start each with
+its own `serve --client NAME` and run `login --client NAME` for each; the
+name is a label, not a check of who is connecting. `postal-mcp logout` disconnects the account and
+deletes the stored key.
+
+The AI cannot do this. `login` refuses to run without an interactive
+terminal.
+
+## Finer control
+
+The `admin` commands do the same steps one at a time, with every limit
+available. `connect`, `grant`, `price` and `resolve` ask you to confirm and
+refuse to run without an interactive terminal.
 
 ```sh
 postal-mcp admin connect mock
@@ -49,16 +74,27 @@ postal-mcp admin operations
 postal-mcp admin audit
 ```
 
-For Lob, connect with a test key and set your price for a letter, because
-Lob cannot quote and nothing is sent without a bounded cost:
+For Lob without `login`, connect with a test key and set your price for a
+letter:
 
 ```sh
 postal-mcp admin connect lob --env test
 postal-mcp admin price lob letter --base USD:120 --per-extra-page 20
 ```
 
+A price may have fractions of a cent: `--base USD:106.6` is $1.066. The
+cost of a letter is worked out from the exact price and rounded up to a
+whole cent once, per letter.
+
 Lob letters need a return address (`from`). A letter is either one PDF or
 text and Markdown documents.
+
+To check the Lob adapter against Lob's test environment (nothing is printed
+or mailed, and it refuses anything but a `test_` key):
+
+```sh
+LOB_TEST_API_KEY=test_... cargo test --test lob_live -- --ignored
+```
 
 Documents are plain text or Markdown given inline, or a PDF with US Letter
 pages. The server reads PDF files only from directories you name with

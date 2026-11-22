@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use time::Duration;
 
 use crate::connections::{Connection, SecretStore, resolve};
-use crate::core::{Capability, Money, Timestamp, clock, new_id};
+use crate::core::{Capability, Money, Rate, Timestamp, clock, new_id};
 use crate::delegation::{self, Evaluation, OperationContext};
 use crate::documents::{self, Document, DocumentFormat};
 use crate::providers::{
@@ -136,19 +136,24 @@ pub struct Price {
 pub struct ProviderPrice {
     pub provider: String,
     pub product: String,
-    /// The price of an item with one billable page.
-    pub base: Money,
-    /// Added for each further billable page, in the same currency.
-    pub per_extra_page_minor: i64,
+    /// ISO 4217 code of both rates.
+    pub currency: String,
+    /// The price of an item with one billable page. May have fractions of
+    /// a cent.
+    pub base: Rate,
+    /// Added for each further billable page.
+    pub per_extra_page: Rate,
 }
 
 impl ProviderPrice {
     /// The price of an item with `pages` billable pages, or `None` on
-    /// overflow.
+    /// overflow. Worked out from the exact rates and rounded up once, to a
+    /// whole minor unit.
     pub fn for_pages(&self, pages: u32) -> Option<Money> {
-        let extra = i64::from(pages.saturating_sub(1)).checked_mul(self.per_extra_page_minor)?;
-        let amount = self.base.amount_minor.checked_add(extra)?;
-        Some(Money::new(self.base.currency.clone(), amount))
+        let amount = self
+            .base
+            .plus_times_ceil(&self.per_extra_page, pages.saturating_sub(1))?;
+        Some(Money::new(self.currency.clone(), amount))
     }
 }
 

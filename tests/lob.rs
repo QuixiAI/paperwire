@@ -10,7 +10,7 @@ use std::time::Duration;
 use postal_mcp::connections::{
     Connection, ConnectionStatus, CredentialRef, MemoryStore, SecretStore,
 };
-use postal_mcp::core::{Capability, Money, Secret, clock};
+use postal_mcp::core::{Capability, Money, Rate, Secret, clock};
 use postal_mcp::delegation::{Constraints, Grant, Reason};
 use postal_mcp::documents::{self, Document, DocumentDirs, DocumentFormat};
 use postal_mcp::http::{ReqwestTransport, RetryPolicy, Retrying};
@@ -88,8 +88,9 @@ async fn world(constraints: Constraints, priced: bool) -> World {
         let price = ProviderPrice {
             provider: "lob".into(),
             product: "letter".into(),
-            base: Money::new("USD", 120),
-            per_extra_page_minor: 20,
+            currency: "USD".into(),
+            base: Rate::from_minor(120),
+            per_extra_page: Rate::from_minor(20),
         };
         store.set_price(&price, clock::now()).unwrap();
     }

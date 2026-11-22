@@ -4,8 +4,8 @@ use std::io::Write;
 
 use clap::{Args, Subcommand};
 
-use super::{Admin, AdminError, GrantRequest, describe_grant};
-use crate::core::{Capability, Money, Timestamp, clock};
+use super::{Admin, AdminError, GrantRequest, describe_grant, price_line};
+use crate::core::{Capability, Money, Rate, Timestamp, clock};
 use crate::delegation::Constraints;
 use crate::operations::ProviderPrice;
 use crate::providers::Environment;
@@ -46,13 +46,14 @@ pub enum AdminCommand {
         provider: String,
         /// Product, e.g. "letter".
         product: String,
-        /// Price of an item with one billable page, in minor units:
-        /// USD:120 is $1.20.
-        #[arg(long, value_name = "CURRENCY:MINOR", value_parser = parse_money)]
-        base: Money,
-        /// Added for each further billable page, in minor units.
-        #[arg(long, value_name = "MINOR", default_value_t = 0)]
-        per_extra_page: i64,
+        /// Price of an item with one billable page, in minor units, with
+        /// any number of decimals: USD:106.6 is $1.066.
+        #[arg(long, value_name = "CURRENCY:MINOR", value_parser = parse_rate_in)]
+        base: (String, Rate),
+        /// Added for each further billable page, in minor units, with any
+        /// number of decimals.
+        #[arg(long, value_name = "MINOR", default_value = "0", value_parser = parse_rate)]
+        per_extra_page: Rate,
     },
     /// List the prices you have set.
     Prices,
@@ -131,6 +132,24 @@ fn parse_money(s: &str) -> Result<Money, String> {
         Ok(amount) if valid_currency && amount >= 0 => Ok(Money::new(currency, amount)),
         _ => Err(error()),
     }
+}
+
+fn parse_rate(s: &str) -> Result<Rate, String> {
+    Rate::parse_minor(s).ok_or_else(|| {
+        "expected a non-negative amount in minor units, e.g. 106.6 for $1.066".to_owned()
+    })
+}
+
+fn parse_rate_in(s: &str) -> Result<(String, Rate), String> {
+    let error = || "expected CURRENCY:MINOR_UNITS, e.g. USD:106.6 for $1.066".to_owned();
+    let (currency, amount) = s.split_once(':').ok_or_else(error)?;
+    if currency.len() != 3 || !currency.bytes().all(|b| b.is_ascii_uppercase()) {
+        return Err(error());
+    }
+    Ok((
+        currency.to_owned(),
+        parse_rate(amount).map_err(|_| error())?,
+    ))
 }
 
 fn parse_time(s: &str) -> Result<Timestamp, String> {
@@ -244,11 +263,13 @@ pub async fn run(
             base,
             per_extra_page,
         } => {
+            let (currency, base) = base;
             admin.set_price(ProviderPrice {
                 provider: provider.clone(),
                 product: product.clone(),
+                currency,
                 base,
-                per_extra_page_minor: per_extra_page,
+                per_extra_page,
             })?;
             writeln!(out, "Price set: {provider} {product}")?;
         }
@@ -258,15 +279,7 @@ pub async fn run(
                 writeln!(out, "No prices set.")?;
             }
             for p in prices {
-                writeln!(
-                    out,
-                    "{} {}: {} {} + {} per extra page",
-                    p.provider,
-                    p.product,
-                    p.base.amount_minor,
-                    p.base.currency,
-                    p.per_extra_page_minor
-                )?;
+                writeln!(out, "{}", price_line(&p))?;
             }
         }
         AdminCommand::Operations { client } => {
@@ -330,6 +343,17 @@ mod tests {
         assert_eq!(parse_money("USD:300"), Ok(Money::new("USD", 300)));
         for bad in ["300", "usd:300", "USD:3.00", "USD:-1", "DOLLARS:1", "USD:"] {
             assert!(parse_money(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn prices_keep_fractions_of_a_minor_unit() {
+        let (currency, rate) = parse_rate_in("USD:106.6").unwrap();
+        assert_eq!(currency, "USD");
+        assert_eq!(rate.format_major(), "1.066");
+        assert_eq!(parse_rate("20").unwrap(), Rate::from_minor(20));
+        for bad in ["106.6", "usd:1", "USD:-1", "USD:", "USD:1e3"] {
+            assert!(parse_rate_in(bad).is_err(), "{bad}");
         }
     }
 }

@@ -308,7 +308,7 @@ Where providers rely on API keys:
 
 Provider credentials must not be entered through ordinary model-visible MCP inputs or elicitation forms.
 
-In the local implementation the approved setup flow is the admin command line: `postal-mcp admin connect <provider>` prompts for the key on an interactive terminal and stores it in the OS credential store (§20.2).
+In the local implementation the approved setup flow is the command line: `postal-mcp login` (or `postal-mcp admin connect <provider>`) prompts for the key on an interactive terminal and stores it in the OS credential store (§20.2).
 
 ## 4.5 New account creation
 
@@ -571,7 +571,7 @@ However, the AI must not directly issue a valid grant to itself.
 
 Only the trusted administrative system can create or modify effective permissions.
 
-In the local implementation, the admin commands that connect accounts or create grants require confirmation on an interactive terminal and refuse to run when standard input is not a terminal. No flag skips this. It keeps an AI client with shell access from running them unattended; §20.3 states the limits of that protection.
+In the local implementation, `postal-mcp login` and the admin commands that connect accounts or create grants require confirmation on an interactive terminal and refuse to run when standard input is not a terminal. No flag skips this. It keeps an AI client with shell access from running them unattended; §20.3 states the limits of that protection.
 
 ## 6.3 Revocation
 
