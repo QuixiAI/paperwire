@@ -37,3 +37,9 @@ spec; `PLAN.md` tracks milestones and Rust-specific decisions.
   rounding a whole item's cost up.
 - Credentials never pass through MCP tool inputs or appear in logs/Debug output.
 - Default deny: connecting an account grants the AI nothing (design.md §5.6).
+- Every inbound read is checked with `delegation::check` before the provider is
+  called. Envelope images and scanned contents have their own capabilities and
+  are stripped in `src/inbound/` when the client lacks them.
+- What a sender wrote is untrusted (design.md §20.4): pass it on as data, and
+  never let it reach a provider URL or a permission decision. Ids from a client
+  are checked as plain before an adapter sees them.

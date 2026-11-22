@@ -8,9 +8,11 @@ them. See [`design.md`](design.md) for the specification and
 Status: **M5**, plus guided `login`. The MCP server runs over stdio. You can
 connect an account, grant an AI client limited permissions, and the client
 can prepare a text or Markdown document or a PDF, get a quote and send a
-letter within those limits. Two providers are built in: a mock that mails
-nothing, and Lob. The Lob adapter is written from Lob's documentation and
-tested against a local stand-in; it has not yet been run against Lob.
+letter within those limits. It can also read the mail a virtual mailbox
+has received. Three providers are built in: a mock that mails and receives
+nothing, Lob for sending, and Stable for receiving. The Lob and Stable
+adapters are written from each provider's documentation and tested against
+local stand-ins; neither has yet been run against the provider.
 
 ## Build and test
 
@@ -47,8 +49,11 @@ live key, so there is no environment to choose. For Lob it also asks what a
 letter costs you, because Lob cannot quote and nothing is sent without a
 known cost.
 
-The permission it grants is letters within the US, by default up to $3.00
-each and $30.00 a month, with no expiry. It applies to every AI client that
+For a sending account, the permission it grants is letters within the US,
+by default up to $3.00 each and $30.00 a month, with no expiry. For a
+mailbox account (`paperwire login stable`) it asks instead whether the AI
+may see envelope images and read scanned contents; see
+[Receive mail](#receive-mail). It applies to every AI client that
 runs `paperwire serve`. To give clients different limits, start each with
 its own `serve --client NAME` and run `login --client NAME` for each; the
 name is a label, not a check of who is connecting. `paperwire logout` disconnects the account and
@@ -88,6 +93,41 @@ whole cent once, per letter.
 
 Lob letters need a return address (`from`). A letter is either one PDF or
 text and Markdown documents.
+
+## Receive mail
+
+A virtual mailbox provider receives your mail at its address and scans it.
+`paperwire login stable` connects the account and asks which parts the AI
+may read. A sandbox key (`stbl_dev_...`) connects to Stable's sandbox; for
+any other key, answer `live` when asked for the environment. To do the same
+by hand, or to grant different clients different parts:
+
+```sh
+paperwire admin connect stable --env live     # sandbox keys: --env test
+paperwire admin grant --client default --connection <connection id> \
+    --action endpoint.read --action mailbox.read.items \
+    --action mailbox.read.envelopes --action mailbox.read.scans
+```
+
+| Permission | What the AI can read |
+|---|---|
+| `endpoint.read` | The mailbox's street address (`endpoints_list`) |
+| `mailbox.read.items` | That mail arrived, who it is from and whether it is scanned (`correspondence_inbox`, `correspondence_read`) |
+| `mailbox.read.envelopes` | A link to the envelope image |
+| `mailbox.read.scans` | The provider's summary and a link to the scanned document |
+
+`correspondence_read` leaves out any part that was not granted and names the
+missing permission. Links are the provider's temporary ones and are not
+stored. Reading is all there is: the server does not ask the provider to
+open, scan, forward or shred anything. To try it without an account,
+`paperwire admin connect mock` has a mailbox holding two made-up letters.
+
+To have replies to a letter arrive where the AI can read them, give the
+mailbox's address (with your name) as the letter's return address.
+
+Mail is written by other people. The server marks what a sender wrote as
+untrusted, but the AI client decides what to do with it: grant sending and
+reading to the same client with that in mind.
 
 To check the Lob adapter against Lob's test environment (nothing is printed
 or mailed, and it refuses anything but a `test_` key):

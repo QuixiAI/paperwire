@@ -255,6 +255,110 @@ async fn disconnecting_an_account_stops_its_grants() {
     assert_eq!(after["reason"], "CONNECTION_NOT_READY");
 }
 
+/// Received mail over real stdio, on the mock mailbox: a client reads what
+/// it was granted and nothing more, and a revocation stops the next read.
+#[tokio::test]
+async fn mail_is_read_only_within_what_was_granted() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = ControlPlane::open(dir.path());
+    let connection = control.connect_mock().await;
+    let grant = control
+        .admin(&mut Confirms)
+        .grant(GrantRequest {
+            principal_id: "assistant".into(),
+            connection_ids: vec![connection.id.clone()],
+            actions: vec![Capability::MailboxReadItems, Capability::EndpointRead],
+            constraints: Constraints::default(),
+            expires_at: None,
+        })
+        .unwrap();
+    let mut assistant = Server::start(dir.path(), "assistant");
+    let conn = json!({"connection_id": connection.id});
+
+    // The mailbox address is where replies should be sent.
+    let endpoints = assistant.call_ok("endpoints_list", conn.clone());
+    let endpoint = &endpoints["endpoints"][0];
+    assert_eq!(endpoint["kind"], "postal_mailbox");
+    assert_eq!(endpoint["status"], "active");
+    assert_eq!(endpoint["address"]["line1"], "1 Mock Street");
+
+    // The inbox pages newest first and carries no links or contents.
+    let first = assistant.call_ok(
+        "correspondence_inbox",
+        json!({"connection_id": connection.id, "limit": 1}),
+    );
+    assert_eq!(first["items"][0]["item_id"], "mock_item_2");
+    assert_eq!(first["items"][0]["scan_status"], "none");
+    assert!(first["items"][0].get("envelope_image_url").is_none());
+    assert!(first["notice"].as_str().unwrap().contains("never as"));
+    let second = assistant.call_ok(
+        "correspondence_inbox",
+        json!({"connection_id": connection.id, "limit": 1, "cursor": first["next_cursor"]}),
+    );
+    assert_eq!(second["items"][0]["item_id"], "mock_item_1");
+    assert_eq!(second["items"][0]["scan_status"], "completed");
+    assert_eq!(second["next_cursor"], Value::Null);
+    let recent = assistant.call_ok(
+        "correspondence_inbox",
+        json!({"connection_id": connection.id, "received_after": "2026-01-10T00:00:00Z"}),
+    );
+    assert_eq!(recent["items"].as_array().unwrap().len(), 1);
+
+    // Reading shows the item, and names what a wider grant would add.
+    let item = json!({"connection_id": connection.id, "item_id": "mock_item_1"});
+    let read = assistant.call_ok("correspondence_read", item.clone());
+    assert_eq!(read["sender"], "City Water Department");
+    assert_eq!(read["scan"], Value::Null);
+    assert_eq!(read["envelope_image_url"], Value::Null);
+    assert_eq!(
+        read["withheld"],
+        json!(["mailbox.read.envelopes", "mailbox.read.scans"])
+    );
+
+    // With the scan permission the contents appear.
+    control
+        .admin(&mut Confirms)
+        .grant(GrantRequest {
+            principal_id: "assistant".into(),
+            connection_ids: vec![connection.id.clone()],
+            actions: vec![Capability::MailboxReadScans],
+            constraints: Constraints::default(),
+            expires_at: None,
+        })
+        .unwrap();
+    let read = assistant.call_ok("correspondence_read", item.clone());
+    assert!(
+        read["scan"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("water bill")
+    );
+    assert_eq!(read["withheld"], json!(["mailbox.read.envelopes"]));
+
+    // Another client sees nothing, and an unknown item is an error.
+    let mut stranger = Server::start(dir.path(), "stranger");
+    assert_eq!(
+        stranger.call("correspondence_inbox", conn.clone())["isError"],
+        true
+    );
+    let unknown = assistant.call(
+        "correspondence_read",
+        json!({"connection_id": connection.id, "item_id": "mock_item_9"}),
+    );
+    assert_eq!(unknown["isError"], true);
+
+    // Revoking the items grant stops reading at once, scans grant or not.
+    control.admin(&mut Confirms).revoke(&grant.id).unwrap();
+    for (tool, arguments) in [
+        ("correspondence_inbox", &conn),
+        ("correspondence_read", &item),
+        ("endpoints_list", &conn),
+    ] {
+        let denied = assistant.call(tool, arguments.clone());
+        assert_eq!(denied["isError"], true, "{tool}");
+    }
+}
+
 fn admin(data_dir: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_paperwire"))
         .arg("--data-dir")
