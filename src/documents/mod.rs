@@ -216,9 +216,92 @@ pub fn get(store: &Store, principal: &str, id: &str) -> Result<Option<Document>,
     Ok(store.document(id)?.filter(|d| d.principal_id == principal))
 }
 
+/// What a letter made of some documents will look like (design.md §9.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    /// The documents, in printing order.
+    pub documents: Vec<Document>,
+    /// Text and Markdown documents as the one HTML page a provider is
+    /// given. `None` for a PDF, which is sent exactly as imported.
+    pub html: Option<String>,
+    pub page_count: u32,
+    /// True when any document's page count is an estimate.
+    pub page_count_estimated: bool,
+}
+
+/// Preview the letter `ids` would make, in that order. Reads only
+/// documents of `principal` and contacts no provider.
+pub fn preview(store: &Store, principal: &str, ids: &[String]) -> Result<Preview, DocumentError> {
+    if ids.is_empty() {
+        return Err(DocumentError::Invalid(
+            "at least one document is required; call documents_prepare".into(),
+        ));
+    }
+    let mut documents = Vec::with_capacity(ids.len());
+    for id in ids {
+        let document = get(store, principal, id)?.ok_or_else(|| {
+            DocumentError::Invalid(format!("no document {id:?}; call documents_prepare"))
+        })?;
+        documents.push(document);
+    }
+    let has_pdf = documents.iter().any(|d| d.format == DocumentFormat::Pdf);
+    if has_pdf && documents.len() > 1 {
+        return Err(DocumentError::Invalid(
+            "a letter is either one PDF or text and Markdown documents, not a mix".into(),
+        ));
+    }
+    let html = if has_pdf {
+        None
+    } else {
+        Some(render_html(&documents).map_err(DocumentError::Invalid)?)
+    };
+    Ok(Preview {
+        html,
+        page_count: documents
+            .iter()
+            .fold(0, |pages, d| pages.saturating_add(d.page_count)),
+        page_count_estimated: documents.iter().any(|d| d.page_count_estimated),
+        documents,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_renders_text_in_order_and_scopes_to_the_client() {
+        let store = Store::open_in_memory().unwrap();
+        let text = |format, content| {
+            prepare(&store, "assistant", None, format, content)
+                .unwrap()
+                .id
+        };
+        let cover = text(DocumentFormat::Text, "Dear <Jane>,");
+        let exhibit = text(DocumentFormat::Markdown, "# Exhibit A");
+
+        let preview = preview(&store, "assistant", &[cover.clone(), exhibit.clone()]).unwrap();
+        let html = preview.html.unwrap();
+        let (first, second) = (
+            html.find("Dear &lt;Jane&gt;,").unwrap(),
+            html.find("<h1>Exhibit A</h1>").unwrap(),
+        );
+        assert!(first < second);
+        assert_eq!(preview.page_count, 2);
+        assert!(preview.page_count_estimated);
+        assert_eq!(
+            preview.documents.iter().map(|d| &d.id).collect::<Vec<_>>(),
+            [&cover, &exhibit]
+        );
+
+        // Another client's document reads as missing, and so does no list.
+        for (principal, ids) in [("other", vec![cover]), ("assistant", vec![])] {
+            assert!(matches!(
+                super::preview(&store, principal, &ids),
+                Err(DocumentError::Invalid(_))
+            ));
+        }
+    }
 
     #[test]
     fn page_estimate_counts_wrapped_lines() {

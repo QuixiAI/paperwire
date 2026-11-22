@@ -162,6 +162,40 @@ pub struct DocumentView {
     pub page_count_estimated: bool,
 }
 
+impl From<documents::Document> for DocumentView {
+    fn from(document: documents::Document) -> Self {
+        Self {
+            document_id: document.id,
+            format: document.format,
+            sha256: document.sha256,
+            size_bytes: document.content.len(),
+            page_count: document.page_count,
+            page_count_estimated: document.page_count_estimated,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PreviewParams {
+    /// Documents from `documents_prepare`, in printing order.
+    pub document_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PreviewView {
+    /// The documents, in printing order.
+    pub documents: Vec<DocumentView>,
+    /// Text and Markdown documents as the single HTML page a provider is
+    /// given to print. Absent for a PDF, which is sent exactly as imported.
+    pub html: Option<String>,
+    /// Pages in the documents themselves.
+    pub page_count: u32,
+    /// True when any document's page count is an estimate.
+    pub page_count_estimated: bool,
+    /// What the preview does not show.
+    pub note: String,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct QuoteParams {
     pub connection_id: String,
@@ -427,13 +461,37 @@ impl PaperwireServer {
             documents::DocumentError::Store(e) => internal(e),
             other => other.to_string(),
         })?;
-        Ok(Json(DocumentView {
-            document_id: document.id,
-            format: document.format,
-            sha256: document.sha256,
-            size_bytes: document.content.len(),
-            page_count: document.page_count,
-            page_count_estimated: document.page_count_estimated,
+        Ok(Json(document.into()))
+    }
+
+    #[tool(
+        description = "Show what a letter made of these documents will look like before it is quoted or sent: the pages in order and, for text and Markdown, the exact HTML a provider is given to print. Sends nothing, costs nothing and contacts no provider.",
+        annotations(read_only_hint = true)
+    )]
+    async fn documents_preview(
+        &self,
+        Parameters(PreviewParams { document_ids }): Parameters<PreviewParams>,
+    ) -> Result<Json<PreviewView>, String> {
+        let preview = documents::preview(&self.store, &self.principal, &document_ids).map_err(
+            |e| match e {
+                documents::DocumentError::Store(e) => internal(e),
+                other => other.to_string(),
+            },
+        )?;
+        let note = if preview.html.is_some() {
+            "The provider lays out and prints this HTML, so page breaks may differ from \
+             the estimate. A provider may add a page for the address; correspondence_quote \
+             gives the page count that is billed."
+        } else {
+            "A PDF is sent exactly as imported. A provider may add a page for the address; \
+             correspondence_quote gives the page count that is billed."
+        };
+        Ok(Json(PreviewView {
+            html: preview.html,
+            page_count: preview.page_count,
+            page_count_estimated: preview.page_count_estimated,
+            documents: preview.documents.into_iter().map(Into::into).collect(),
+            note: note.into(),
         }))
     }
 

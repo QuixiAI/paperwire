@@ -99,6 +99,8 @@ LOB_TEST_API_KEY=test_... cargo test --test lob_live -- --ignored
 Documents are plain text or Markdown given inline, or a PDF with US Letter
 pages. The server reads PDF files only from directories you name with
 `serve --document-dir`; without that option it reads no files at all.
+Before quoting, the client can call `documents_preview` to see the letter's
+pages in order and the exact HTML a provider would be given to print.
 
 Money is in minor units: `USD:300` is $3.00. A connected account grants the
 AI nothing until you add a grant, and a revoked grant stops working on the
