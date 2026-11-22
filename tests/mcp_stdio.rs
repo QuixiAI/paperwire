@@ -6,13 +6,16 @@ use serde_json::json;
 
 use common::{Server, meta, tool_names};
 
-const ALL_TOOLS: [&str; 10] = [
+const ALL_TOOLS: [&str; 13] = [
     "connections_list",
     "connections_status",
+    "correspondence_inbox",
     "correspondence_quote",
+    "correspondence_read",
     "correspondence_send",
     "correspondence_status",
     "documents_prepare",
+    "endpoints_list",
     "permissions_check",
     "permissions_get",
     "providers_capabilities",

@@ -33,7 +33,8 @@ src/
   core/             # capability ids (§3.5), Money, ids, errors
   http/             # Transport trait, Request/Response, ReqwestTransport, Retrying; ambiguous-outcome classification (§19.2)
   mcp/              # rmcp ServerHandler + tools (§9); resources later (§21)
-  providers/        # ProviderAdapter trait (§17.5) + mock; lob, phaxio, stable later
+  providers/        # ProviderAdapter trait (§17.5) + mock, lob, stable; phaxio later
+  inbound/          # received mail: endpoints, inbox, read (§14)
   -- added by milestone --
   store/            # rusqlite schema/migrations (§18.2), BEGIN IMMEDIATE for budgets (§16.4)
   connections/      # connection records, credential lookup (keyring), verify (§4)
@@ -201,6 +202,49 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
 - Fixed in `login`: US only, USD, letters, no expiry. Use `admin grant` for
   anything else.
 
+### Inbound mail, read-only ✅ (Stable built from its documentation; not yet run against Stable)
+- Tools (§9.6): `endpoints_list`, `correspondence_inbox`,
+  `correspondence_read`. All three are reads. The mailroom actions of §9.7
+  (scan, forward, shred) are not built.
+- `inbound/`: checks the client's permission with `delegation::check` before
+  every provider call, as `Operations::track` does, so each read is audited
+  and a revocation applies to the next one (§6.3). Reads reserve nothing
+  and need no `AuthorizedOperation`.
+- One permission per part of an item (§3.5). `mailbox.read.items` shows that
+  mail arrived, from whom, and whether it is scanned. The envelope image
+  needs `mailbox.read.envelopes` and the contents need `mailbox.read.scans`.
+  A listing never carries images or contents; `correspondence_read` omits
+  what was not granted and names the missing permission in `withheld`.
+- `ProviderAdapter` gains `endpoints`, `inbox` and `inbound_item`, with
+  defaults that refuse, so sending-only adapters are unchanged.
+- Ids from the client reach provider URLs, so only letters, digits, `-` and
+  `_` are accepted, and adapters percent-encode every value they add.
+- Untrusted content (§20.4): results carry a notice that sender names,
+  summaries and documents are data, not instructions. That is advice to the
+  model, not enforcement; the enforcement is that mail cannot change grants.
+- `providers/stable.rs`, generic over `Transport`, GET only. A test
+  connection talks to the sandbox host and a live one to production; sandbox
+  keys (`stbl_dev_`) are never sent to production or the reverse. Bad keys
+  come back as 400 `INVALID_API_KEY`.
+- Scans are passed on as Stable's temporary links plus its summary. Nothing
+  received is stored (§18.3), so there is no sync cursor or webhook yet.
+- The mock has one mailbox and two fixed letters, for trying the tools
+  without an account.
+- Tests: `tests/stable.rs` against a wiremock stand-in, and
+  `mail_is_read_only_within_what_was_granted` in `tests/delegation.rs` over
+  real stdio.
+- **To confirm with a real Stable key:**
+  - whether a mail item carries `createdAt` (Stable filters by it, but the
+    reference does not list the field); it is read when present;
+  - the shape of `scanDetails` on an unscanned item, and that
+    `scanDetails.imageUrl` is the scanned PDF;
+  - the order `GET /v1/mail-items` returns items in;
+  - the prefix of production keys, to recognise the environment at `login`.
+- **Not yet:** downloading a scan and returning its text or pages (a client
+  must fetch the link itself); OCR results; webhooks and polling (§14.5);
+  `login` for a mailbox account (it grants letters only, so use `admin
+  connect` and `admin grant`); other mailbox providers.
+
 ### M6: MVP demo (§29) as an integration test
 - Connect → grant "domestic letters < $3" → send → status → revoke → send denied.
 - Passing on the mock provider (`send_a_letter_then_revoke` in
@@ -215,7 +259,7 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
   ```
   Its first run is also the check of the M4 "to confirm" list.
 
-After the MVP: Phaxio fax (multipart), Stable inbound mailbox, local web control plane
+After the MVP: Phaxio fax (multipart), mailroom actions (§15), local web control plane
 (axum), streamable HTTP + OAuth for hosted mode (§7.2).
 
 ## 3. Decisions (change any)

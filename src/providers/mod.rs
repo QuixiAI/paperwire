@@ -3,6 +3,7 @@
 
 mod lob;
 mod mock;
+mod stable;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -15,10 +16,12 @@ use crate::core::{Capability, Money, Secret};
 use crate::delegation::AuthorizedOperation;
 use crate::documents::Document;
 use crate::http::{HttpError, ReqwestTransport, RetryPolicy, Retrying};
+use crate::inbound::{Endpoint, InboundItem, InboxPage, InboxQuery};
 use crate::operations::{MailItem, Price};
 
 pub use lob::LobAdapter;
 pub use mock::{MockBehavior, MockProvider};
+pub use stable::StableAdapter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -199,6 +202,41 @@ pub trait ProviderAdapter: Send + Sync {
         reference: &'a str,
         account: Account<'a>,
     ) -> BoxFuture<'a, Result<Tracking, ProviderError>>;
+
+    // Receiving (design.md §14). These are reads: the caller checks the
+    // client's permission before calling, as it does for `track`. A
+    // provider that receives nothing keeps the defaults.
+
+    /// The account's receiving endpoints, e.g. its mailbox addresses.
+    fn endpoints<'a>(
+        &'a self,
+        _account: Account<'a>,
+    ) -> BoxFuture<'a, Result<Vec<Endpoint>, ProviderError>> {
+        Box::pin(async { Err(not_a_mailbox()) })
+    }
+
+    /// Received mail matching `query`, newest first where the provider
+    /// orders it.
+    fn inbox<'a>(
+        &'a self,
+        _account: Account<'a>,
+        _query: &'a InboxQuery,
+    ) -> BoxFuture<'a, Result<InboxPage, ProviderError>> {
+        Box::pin(async { Err(not_a_mailbox()) })
+    }
+
+    /// One received item, or `None` if the account has no such item.
+    fn inbound_item<'a>(
+        &'a self,
+        _account: Account<'a>,
+        _item_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<InboundItem>, ProviderError>> {
+        Box::pin(async { Err(not_a_mailbox()) })
+    }
+}
+
+fn not_a_mailbox() -> ProviderError {
+    ProviderError::Other("this provider does not receive mail".into())
 }
 
 /// The providers this installation knows about.
@@ -217,7 +255,8 @@ impl Registry {
         let transport = Retrying::new(ReqwestTransport::new()?, RetryPolicy::default());
         Ok(Self::new(vec![
             Arc::new(MockProvider::default()),
-            Arc::new(LobAdapter::new(transport)),
+            Arc::new(LobAdapter::new(transport.clone())),
+            Arc::new(StableAdapter::new(transport)),
         ]))
     }
 

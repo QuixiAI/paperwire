@@ -4,6 +4,7 @@ pub mod core;
 pub mod delegation;
 pub mod documents;
 pub mod http;
+pub mod inbound;
 pub mod mcp;
 pub mod operations;
 pub mod providers;

@@ -8,9 +8,11 @@ them. See [`design.md`](design.md) for the specification and
 Status: **M5**, plus guided `login`. The MCP server runs over stdio. You can
 connect an account, grant an AI client limited permissions, and the client
 can prepare a text or Markdown document or a PDF, get a quote and send a
-letter within those limits. Two providers are built in: a mock that mails
-nothing, and Lob. The Lob adapter is written from Lob's documentation and
-tested against a local stand-in; it has not yet been run against Lob.
+letter within those limits. It can also read the mail a virtual mailbox
+has received. Three providers are built in: a mock that mails and receives
+nothing, Lob for sending, and Stable for receiving. The Lob and Stable
+adapters are written from each provider's documentation and tested against
+local stand-ins; neither has yet been run against the provider.
 
 ## Build and test
 
@@ -88,6 +90,38 @@ whole cent once, per letter.
 
 Lob letters need a return address (`from`). A letter is either one PDF or
 text and Markdown documents.
+
+## Receive mail
+
+A virtual mailbox provider receives your mail at its address and scans it.
+Connect the account, then grant only the parts the AI should read:
+
+```sh
+paperwire admin connect stable --env live     # sandbox keys (stbl_dev_...): --env test
+paperwire admin grant --client default --connection <connection id> \
+    --action endpoint.read --action mailbox.read.items \
+    --action mailbox.read.envelopes --action mailbox.read.scans
+```
+
+| Permission | What the AI can read |
+|---|---|
+| `endpoint.read` | The mailbox's street address (`endpoints_list`) |
+| `mailbox.read.items` | That mail arrived, who it is from and whether it is scanned (`correspondence_inbox`, `correspondence_read`) |
+| `mailbox.read.envelopes` | A link to the envelope image |
+| `mailbox.read.scans` | The provider's summary and a link to the scanned document |
+
+`correspondence_read` leaves out any part that was not granted and names the
+missing permission. Links are the provider's temporary ones and are not
+stored. Reading is all there is: the server does not ask the provider to
+open, scan, forward or shred anything. To try it without an account,
+`paperwire admin connect mock` has a mailbox holding two made-up letters.
+
+To have replies to a letter arrive where the AI can read them, give the
+mailbox's address (with your name) as the letter's return address.
+
+Mail is written by other people. The server marks what a sender wrote as
+untrusted, but the AI client decides what to do with it: grant sending and
+reading to the same client with that in mind.
 
 To check the Lob adapter against Lob's test environment (nothing is printed
 or mailed, and it refuses anything but a `test_` key):
