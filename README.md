@@ -49,8 +49,11 @@ live key, so there is no environment to choose. For Lob it also asks what a
 letter costs you, because Lob cannot quote and nothing is sent without a
 known cost.
 
-The permission it grants is letters within the US, by default up to $3.00
-each and $30.00 a month, with no expiry. It applies to every AI client that
+For a sending account, the permission it grants is letters within the US,
+by default up to $3.00 each and $30.00 a month, with no expiry. For a
+mailbox account (`paperwire login stable`) it asks instead whether the AI
+may see envelope images and read scanned contents; see
+[Receive mail](#receive-mail). It applies to every AI client that
 runs `paperwire serve`. To give clients different limits, start each with
 its own `serve --client NAME` and run `login --client NAME` for each; the
 name is a label, not a check of who is connecting. `paperwire logout` disconnects the account and
@@ -94,10 +97,13 @@ text and Markdown documents.
 ## Receive mail
 
 A virtual mailbox provider receives your mail at its address and scans it.
-Connect the account, then grant only the parts the AI should read:
+`paperwire login stable` connects the account and asks which parts the AI
+may read. A sandbox key (`stbl_dev_...`) connects to Stable's sandbox; for
+any other key, answer `live` when asked for the environment. To do the same
+by hand, or to grant different clients different parts:
 
 ```sh
-paperwire admin connect stable --env live     # sandbox keys (stbl_dev_...): --env test
+paperwire admin connect stable --env live     # sandbox keys: --env test
 paperwire admin grant --client default --connection <connection id> \
     --action endpoint.read --action mailbox.read.items \
     --action mailbox.read.envelopes --action mailbox.read.scans

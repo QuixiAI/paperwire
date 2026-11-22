@@ -4,6 +4,9 @@
 //! It asks its questions, verifies the credential with the provider, and
 //! then shows everything it is about to store (the connection, the price
 //! and the grant) for a single confirmation. Nothing is stored before that.
+//! An account that sends is granted letters within spending limits; one
+//! that only receives mail is granted the parts of that mail the user
+//! chooses.
 //! Like every command that widens what the AI may do, it needs a person at
 //! an interactive terminal (design.md §6.2).
 
@@ -220,8 +223,44 @@ impl Admin<'_> {
         Ok(Some(price))
     }
 
+    /// What a client may read of a mailbox account. Seeing that mail
+    /// arrived is the least there is to grant; images and contents are
+    /// asked for separately. Reads cost nothing, so there are no limits.
+    fn ask_mailbox_actions(
+        &mut self,
+        info: &ProviderInfo,
+        connection: &Connection,
+    ) -> Result<Vec<Capability>, AdminError> {
+        self.note(&format!(
+            "{} receives mail. The AI will be able to see the mailbox address and \
+             what has arrived: who each item is from, and when.",
+            info.name
+        ))?;
+        let mut actions = vec![Capability::MailboxReadItems];
+        if connection.capabilities.contains(&Capability::EndpointRead) {
+            actions.push(Capability::EndpointRead);
+        }
+        let optional = [
+            (
+                Capability::MailboxReadEnvelopes,
+                "Let the AI see images of the envelopes?",
+            ),
+            (
+                Capability::MailboxReadScans,
+                "Let the AI read the scanned contents of your mail?",
+            ),
+        ];
+        for (action, question) in optional {
+            if connection.capabilities.contains(&action) && self.ask_yes_no(question, true)? {
+                actions.push(action);
+            }
+        }
+        Ok(actions)
+    }
+
     /// Connect a provider account (or reuse a connected one) and grant an
-    /// AI client letters within the US under the limits the user enters.
+    /// AI client letters within the US under the limits the user enters,
+    /// or, for an account that only receives mail, what it may read.
     pub async fn login(&mut self, request: LoginRequest) -> Result<LoginOutcome, AdminError> {
         let provider = self.choose_provider(request.provider)?;
         let adapter = self
@@ -259,48 +298,64 @@ impl Admin<'_> {
             }
         };
 
-        let actions: Vec<Capability> = [Capability::PostalSendLetter, Capability::PostalReadStatus]
-            .into_iter()
-            .filter(|action| connection.capabilities.contains(action))
-            .collect();
-        if !actions.contains(&Capability::PostalSendLetter) {
+        let sends = connection
+            .capabilities
+            .contains(&Capability::PostalSendLetter);
+        let receives = connection
+            .capabilities
+            .contains(&Capability::MailboxReadItems);
+        if !sends && !receives {
             return Err(AdminError::Invalid(format!(
-                "this {} account cannot send letters; use `paperwire admin grant` \
-                 to grant what it can do",
+                "this {} account can neither send letters nor receive mail; use \
+                 `paperwire admin grant` to grant what it can do",
                 info.name
             )));
         }
 
-        let needs_price =
-            adapter.needs_user_price() && self.store.price(&info.id, PRODUCT)?.is_none();
-        let price = if needs_price {
-            self.ask_price(&info)?
-        } else {
-            None
-        };
-
         // The name is a label the server cannot verify, so it is not asked
         // for: every client shares one unless the user names another.
         let client = request.client.unwrap_or_else(|| DEFAULT_CLIENT.to_owned());
-        let max_cost = self.ask_limit(
-            &format!("Most a single letter may cost, in {CURRENCY}"),
-            Some(DEFAULT_MAX_COST),
-        )?;
-        let monthly_budget = self.ask_limit(
-            &format!("Most the AI may spend per month, in {CURRENCY}"),
-            Some(DEFAULT_MONTHLY_BUDGET),
-        )?;
+        let mut needs_price = false;
+        let mut price = None;
+        // An account that can send is set up for sending, as before. One
+        // that only receives is set up for reading.
+        let (actions, constraints) = if sends {
+            let actions = [Capability::PostalSendLetter, Capability::PostalReadStatus]
+                .into_iter()
+                .filter(|action| connection.capabilities.contains(action))
+                .collect();
+            needs_price =
+                adapter.needs_user_price() && self.store.price(&info.id, PRODUCT)?.is_none();
+            if needs_price {
+                price = self.ask_price(&info)?;
+            }
+            let max_cost = self.ask_limit(
+                &format!("Most a single letter may cost, in {CURRENCY}"),
+                Some(DEFAULT_MAX_COST),
+            )?;
+            let monthly_budget = self.ask_limit(
+                &format!("Most the AI may spend per month, in {CURRENCY}"),
+                Some(DEFAULT_MONTHLY_BUDGET),
+            )?;
+            let constraints = Constraints {
+                destination_countries: Some(vec!["US".into()]),
+                max_cost_per_item: max_cost.map(|amount| Money::new(CURRENCY, amount)),
+                monthly_budget: monthly_budget.map(|amount| Money::new(CURRENCY, amount)),
+                ..Constraints::default()
+            };
+            (actions, constraints)
+        } else {
+            (
+                self.ask_mailbox_actions(&info, &connection)?,
+                Constraints::default(),
+            )
+        };
         let grant = self.build_grant(
             GrantRequest {
                 principal_id: client,
                 connection_ids: vec![connection.id.clone()],
                 actions,
-                constraints: Constraints {
-                    destination_countries: Some(vec!["US".into()]),
-                    max_cost_per_item: max_cost.map(|amount| Money::new(CURRENCY, amount)),
-                    monthly_budget: monthly_budget.map(|amount| Money::new(CURRENCY, amount)),
-                    ..Constraints::default()
-                },
+                constraints,
                 expires_at: None,
             },
             Some(&connection),
@@ -316,9 +371,13 @@ impl Admin<'_> {
             ));
             if connection.environment == Environment::Live {
                 summary.push(
-                    "This is a LIVE account: what the AI sends is really mailed and \
-                     really charged."
-                        .into(),
+                    if sends {
+                        "This is a LIVE account: what the AI sends is really mailed and \
+                         really charged."
+                    } else {
+                        "This is a LIVE account: the AI reads your real mail."
+                    }
+                    .into(),
                 );
             }
         } else {

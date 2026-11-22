@@ -199,8 +199,8 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
   rounded up to a whole cent once; limits, reservations and the ledger stay
   in whole cents (`core::Money`).
 - `paperwire logout [connection id]` disconnects and deletes the key.
-- Fixed in `login`: US only, USD, letters, no expiry. Use `admin grant` for
-  anything else.
+- Fixed in `login` for sending: US only, USD, letters, no expiry. Use
+  `admin grant` for anything else.
 
 ### Inbound mail, read-only ✅ (Stable built from its documentation; not yet run against Stable)
 - Tools (§9.6): `endpoints_list`, `correspondence_inbox`,
@@ -240,10 +240,14 @@ one, so a tool handler can't reach a provider without a policy decision (§17.5,
     `scanDetails.imageUrl` is the scanned PDF;
   - the order `GET /v1/mail-items` returns items in;
   - the prefix of production keys, to recognise the environment at `login`.
+- `login` on an account that receives mail and cannot send grants
+  `mailbox.read.items` and `endpoint.read`, and asks separately about
+  envelope images and scanned contents. There is no price and no limit to
+  ask for, since reads cost nothing. An account that can send (the mock
+  included) still gets the letters flow.
 - **Not yet:** downloading a scan and returning its text or pages (a client
   must fetch the link itself); OCR results; webhooks and polling (§14.5);
-  `login` for a mailbox account (it grants letters only, so use `admin
-  connect` and `admin grant`); other mailbox providers.
+  other mailbox providers.
 
 ### M6: MVP demo (§29) as an integration test
 - Connect → grant "domestic letters < $3" → send → status → revoke → send denied.

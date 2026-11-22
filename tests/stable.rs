@@ -5,6 +5,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use paperwire::admin::login::LoginRequest;
+use paperwire::admin::{Admin, AdminError, Terminal};
 use paperwire::connections::{
     Connection, ConnectionStatus, CredentialRef, MemoryStore, SecretStore,
 };
@@ -498,6 +500,109 @@ async fn nothing_is_read_without_a_live_grant() {
     assert!(matches!(revoked, Err(InboundError::Denied(_))));
 
     assert_eq!(requests(&w.server).await, 0);
+}
+
+/// Answers `login`'s questions from a script and keeps what it was shown.
+struct Scripted {
+    key: &'static str,
+    answers: Vec<&'static str>,
+    asked: Vec<String>,
+    shown: Vec<String>,
+}
+
+impl Terminal for Scripted {
+    fn confirm(&mut self, summary: &str) -> Result<bool, AdminError> {
+        self.shown.push(summary.to_owned());
+        Ok(true)
+    }
+
+    fn read_secret(&mut self, _: &str) -> Result<Secret, AdminError> {
+        Ok(Secret::new(self.key))
+    }
+
+    fn ask(&mut self, question: &str, _: Option<&str>) -> Result<String, AdminError> {
+        self.asked.push(question.to_owned());
+        Ok(self.answers.remove(0).to_owned())
+    }
+
+    fn note(&mut self, _: &str) -> Result<(), AdminError> {
+        Ok(())
+    }
+}
+
+/// `login` on an account that only receives mail grants reading, part by
+/// part, and asks nothing about prices or spending.
+#[tokio::test]
+async fn login_grants_a_mailbox_account_only_the_parts_chosen() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/locations"))
+        .and(header("x-api-key", KEY))
+        .respond_with(ResponseTemplate::new(200).set_body_json(list(vec![location()], None)))
+        .mount(&server)
+        .await;
+    let store = Store::open_in_memory().unwrap();
+    let secrets = MemoryStore::default();
+    let providers = Registry::new(vec![Arc::new(adapter(&server))]);
+    // Envelope images: yes. Scanned contents: no.
+    let mut terminal = Scripted {
+        key: KEY,
+        answers: vec!["yes", "no"],
+        asked: Vec::new(),
+        shown: Vec::new(),
+    };
+
+    let outcome = Admin {
+        store: &store,
+        providers: &providers,
+        secrets: &secrets,
+        terminal: &mut terminal,
+    }
+    .login(LoginRequest {
+        provider: Some("stable".into()),
+        client: None,
+    })
+    .await
+    .unwrap();
+
+    // The sandbox key chose the environment, so only the two parts were
+    // asked about: no price, no spending limit.
+    assert_eq!(terminal.asked.len(), 2, "{:?}", terminal.asked);
+    assert_eq!(terminal.shown.len(), 1, "exactly one confirmation");
+    assert!(terminal.shown[0].contains("Connect a Stable account (test environment)"));
+    assert!(!terminal.shown[0].contains(KEY));
+    assert_eq!(outcome.connection.environment, Environment::Test);
+    assert_eq!(outcome.price, None);
+    assert!(!outcome.price_missing);
+    assert_eq!(
+        outcome.grant.actions,
+        [
+            Capability::MailboxReadItems,
+            Capability::EndpointRead,
+            Capability::MailboxReadEnvelopes
+        ]
+    );
+    assert_eq!(outcome.grant.constraints, Constraints::default());
+    assert_eq!(
+        store.grants(None).unwrap(),
+        std::slice::from_ref(&outcome.grant)
+    );
+    assert_eq!(
+        secrets
+            .get(&outcome.connection.id)
+            .unwrap()
+            .unwrap()
+            .expose(),
+        KEY
+    );
+
+    // The grant works: the client it was made for can list endpoints.
+    let inbound = Inbound::new(store, providers, Arc::new(secrets));
+    let endpoints = inbound
+        .endpoints(&outcome.grant.principal_id, &outcome.connection.id)
+        .await
+        .unwrap();
+    assert_eq!(endpoints[0].endpoint_id, "loc_1");
 }
 
 #[tokio::test]
